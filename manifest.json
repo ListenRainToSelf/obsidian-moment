@@ -1,0 +1,9 @@
+{
+	"id": "obsidian-moment",
+	"name": "此刻 MOMENT",
+	"version": "0.2.1",
+	"minAppVersion": "1.4.0",
+	"description": "把日记写成像发「朋友圈」一样自然：碎片、即时、带着氛围感。双视图信息流 + 下拉全览，数据永远在本地 markdown。",
+	"author": "MOMENT",
+	"isDesktopOnly": false
+}

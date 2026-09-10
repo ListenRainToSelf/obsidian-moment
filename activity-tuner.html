@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>此刻 MOMENT · 活跃度格点调参</title>
+<style>
+:root{
+  --bg:#f4f7fa; --surface:rgba(255,255,255,.9); --ink:#33405a;
+  --muted:#8a94a8; --rule:#e3e9f1; --accent:#5aa7d6; --accent2:#7a6bb8;
+  --radius:16px; --shadow:0 8px 30px rgba(90,130,200,.12);
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:var(--ink);background:
+  radial-gradient(120% 120% at 100% 0%,rgba(90,167,214,.14),transparent 55%),
+  radial-gradient(120% 120% at 0% 100%,rgba(122,107,184,.12),transparent 55%),
+  var(--bg);min-height:100vh;display:flex;gap:24px;padding:28px}
+main{flex:1;min-width:0}
+.side{width:300px;flex:none;position:sticky;top:28px;align-self:flex-start}
+.card{background:var(--surface);border-radius:var(--radius);box-shadow:var(--shadow);
+  border:1px solid rgba(255,255,255,.6);padding:18px 20px}
+.card+.card{margin-top:16px}
+h1{font-size:1.05rem;margin:0 0 2px}
+h2{font-size:0.85rem;margin:14px 0 8px;color:var(--muted);font-weight:600}
+.sub{font-size:.78rem;color:var(--muted);margin:0 0 14px}
+.row{display:grid;grid-template-columns:88px 1fr 46px;align-items:center;gap:10px;margin:9px 0;font-size:.8rem}
+.row label{color:#54617c}
+.row input[type=range]{width:100%;accent-color:var(--accent)}
+.row b{font-variant-numeric:tabular-nums;color:var(--ink);font-weight:600}
+select,input[type=color]{font:inherit}
+.seg{display:flex;gap:6px;flex-wrap:wrap}
+.seg button{border:1px solid var(--rule);background:#fff;color:var(--muted);border-radius:12px;
+  padding:3px 10px;font-size:.74rem;cursor:pointer}
+.seg button.on{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-color:transparent}
+.bigrow{display:flex;align-items:center;gap:10px;margin:9px 0}
+.bigrow > span{font-size:.8rem;color:#54617c;width:88px;flex:none}
+.bigrow input{flex:1}
+/* 预览卡片，模拟插件里的活跃度区域 */
+.cover{height:70px;border-radius:0;background:linear-gradient(120deg,#9fc7e8,#c9bde8);
+  position:relative;margin-bottom:12px;overflow:hidden}
+.cover .sig{position:absolute;right:14px;bottom:10px;color:rgba(255,255,255,.95);font-size:.78rem;text-shadow:0 1px 3px rgba(20,30,60,.4)}
+.preview{background:var(--surface);border:1px solid rgba(255,255,255,.6);border-radius:var(--radius);
+  box-shadow:var(--shadow);padding:0;overflow:hidden}
+.pv-activity{padding:var(--pv-pad-y,12px) var(--pv-pad-x,12px);padding-bottom:10px}
+.pv-head{display:flex;justify-content:space-between;align-items:baseline;font-size:.72rem;color:var(--muted);margin-bottom:8px}
+.pv-head b{color:var(--accent);font-weight:600}
+.pv-grid{display:grid;gap:var(--pv-gap,3px)}
+.pv-cell{border-radius:var(--pv-radius,3px);background:var(--pv-base, rgba(122,107,184,.1))}
+.pv-cell.l1{background:var(--pv-c1)} .pv-cell.l2{background:var(--pv-c2)}
+.pv-cell.l3{background:var(--pv-c3)} .pv-cell.l4{background:var(--pv-c4)} .pv-cell.l5{background:var(--pv-c5)}
+.mt{margin-top:6px}
+/* 行首星期标注 */
+.pv-rows{display:grid;grid-template-columns:auto 1fr;column-gap:6px;align-items:start}
+.pv-wk{display:grid;grid-template-columns:repeat(7,1fr);gap:var(--pv-gap,3px);font-size:.6rem;color:var(--muted);text-align:center}
+.pv-wk span{line-height:1}
+.output{background:#0e1726;color:#c9e2ff;border-radius:10px;padding:12px;font-size:.72rem;word-break:break-all;font-family:Consolas,monospace;white-space:pre-wrap}
+.copybtn{margin-top:8px;width:100%;padding:8px;border:none;border-radius:12px;cursor:pointer;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-weight:600}
+.note{font-size:.72rem;color:var(--muted);margin-top:8px;line-height:1.6}
+</style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <h1>此刻 MOMENT · 活跃度</h1>
+    <p class="sub">预览模块会渲染一周 7 列；行数随「列数可显示的周数」自适应。直接拖右侧滑块。</p>
+
+    <div class="cover"><span class="sig">把日子过成想要的样子</span></div>
+
+    <div class="preview">
+      <div class="pv-activity">
+        <div class="pv-head"><span>活跃度</span><b>近<span id="pv-days">28</span>天 · 12 条</b></div>
+        <div class="pv-rows">
+          <div id="pv-wk"></div>
+          <div id="pv-grid" class="pv-grid"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<aside class="side">
+  <div class="card">
+    <h2>尺寸</h2>
+    <div class="row"><label>格点高度</label><input id="s-size" type="range" min="6" max="40" value="16"><b id="v-size">16</b></div>
+    <div class="row"><label>格点宽度比</label><input id="s-wratio" type="range" min="30" max="120" value="100" step="5"><b id="v-wratio">100</b></div>
+    <div class="row"><label>间距 gap</label><input id="s-gap" type="range" min="0" max="12" value="3"><b id="v-gap">3</b></div>
+    <div class="row"><label>圆角半径</label><input id="s-radius" type="range" min="0" max="12" value="3"><b id="v-radius">3</b></div>
+    <div class="row"><label>左右留边</label><input id="s-padx" type="range" min="0" max="48" value="12"><b id="v-padx">12</b></div>
+    <div class="row"><label>上下留边</label><input id="s-pady" type="range" min="0" max="48" value="12"><b id="v-pady">12</b></div>
+    <div class="row"><label>显示星期标</label>
+      <select id="s-week" style="grid-column:2/4">
+        <option value="1" selected>显示（一二三四五六日）</option>
+        <option value="0">隐藏</option>
+      </select>
+    </div>
+
+    <h2>颜色</h2>
+    <div class="row"><label>空底色</label><input id="s-cbase" type="color" value="#7a6bb8"><b id="v-cbase" style="text-align:right">#7a6bb8</b></div>
+    <div class="row"><label>主色系</label><div class="seg" style="grid-column:2/4" id="seg-color">
+      <button data-k="blue" class="on">天蓝</button>
+      <button data-k="purple">暗紫</button>
+      <button data-k="grad">蓝紫渐变</button>
+      <button data-k="green">草绿</button>
+    </div></div>
+    <div class="row"><label>色彩浓度</label><input id="s-alpha" type="range" min="20" max="95" value="70"><b id="v-alpha">70</b></div>
+
+    <h2>配置（发给我）</h2>
+    <div id="out" class="output"></div>
+    <button class="copybtn" id="copy">复制配置</button>
+    <p class="note">把「发给我」里的 JSON 复制发给我，我就按这个数值把插件里的活跃度格点改成一样。</p>
+  </div>
+</aside>
+
+<script>
+const $=s=>document.getElementById(s);
+const days={"blue":["#5aa7d6","#75b7dd","#90c7e5","#aed5eb"],
+  "purple":["#7a6bb8","#9285ca","#ab9fdc","#c4bceb"],
+  "grad":["#5aa7d6","#6d97da","#8288dd","#9b7ad0"],
+  "green":["#5fb981","#7cc794","#99d5a8","#b8e2c3"]};
+const P=/^\s*#([0-9a-f]{6})$/i;
+
+function hex2rgba(h,a){
+  let m=P.exec(h);if(!m)return h;
+  const n=parseInt(m[1],16);
+  return `rgba(${((n>>16)&255)},${((n>>8)&255)},${n&255},${a})`;
+}
+function sample(){
+  const arr=[];for(let i=0;i<28;i++)arr.push(Math.random());
+  return arr;
+}
+let litNow=sample();
+
+function state(){
+  const key=$('seg-color').querySelector('.on').dataset.k;
+  const a=$('s-alpha').value/100;
+  const c=days[key];
+  return {
+    size:+$('s-size').value,
+    widthRatio:+$('s-wratio').value/100,
+    gap:+$('s-gap').value,
+    radius:+$('s-radius').value,
+    padX:+$('s-padx').value,
+    padY:+$('s-pady').value,
+    weekLabels:+$('s-week').value===1,
+    baseColor:$('s-cbase').value,
+    paletteLinks:key==='grad',
+    // 四个挡位颜色依赖透明度生成
+    colors:{
+      base:`rgba(${hex2rgba($('s-cbase').value)})${'(手动用 baseColor+alpha)'}`,
+      c1:hex2rgba(c[0],a*0.35), c2:hex2rgba(c[0],a*0.6),
+      c3:hex2rgba(c[1],a*0.85), c4:key==='grad'?c[3]:hex2rgba(c[2]), c5:key==='grad'?c[3]:hex2rgba(c[3]),
+      alpha: a,
+      palette: key
+    }
+  };
+}
+
+function render(){
+  const st=state(), c=st.colors;
+  // 固定像素小格：不再用 1fr 撑满撑大，改为按像素定宽/高 + 横向铺满
+  const s=render.styleEl, root=render.rootEl;
+  root.style.setProperty('--pv-gap', st.gap+'px');
+  root.style.setProperty('--pv-radius', st.radius+'px');
+  root.style.setProperty('--pv-pad-x', st.padX+'px');
+  root.style.setProperty('--pv-pad-y', st.padY+'px');
+  root.style.setProperty('--pv-base', st.baseColor+'20');
+  const wcell=Math.round(st.size*st.widthRatio)+'px';
+  s.textContent=`#pv-grid{display:grid;grid-template-columns:repeat(7, ${wcell});gap:${st.gap}px;justify-content:space-between}
+   #pv-wk{grid-template-columns:repeat(7, ${wcell});gap:${st.gap}px;justify-content:space-between;font-size:.6rem;color:var(--muted);text-align:center}
+   #pv-grid .pv-cell{width:${wcell};height:${st.size}px;border-radius:${st.radius}px}
+   #pv-grid .pv-cell.l1{background:${c.c1}} #pv-grid .pv-cell.l2{background:${c.c2}}
+   #pv-grid .pv-cell.l3{background:${c.c3}} #pv-grid .pv-cell.l4{background:${c.c4}}
+   #pv-grid .pv-cell.l5{background:${c.c5}}`;
+  // 星期表头
+  const wk=$('pv-wk');wk.innerHTML='';
+  wk.style.display=st.weekLabels?'grid':'none';
+  if(st.weekLabels){['一','二','三','四','五','六','日'].forEach(x=>{const sp=document.createElement('span');sp.textContent=x;wk.appendChild(sp);});}
+  // 格点
+  const g=$('pv-grid');g.innerHTML='';
+  litNow.forEach((v,i)=>{
+    const cell=document.createElement('div');
+    const lvl=(v>0.9)?'l5':(v>0.78?'l4':(v>0.58?'l3':(v>0.35?'l2':(v>0.14?'l1':''))));
+    cell.className=lvl?'pv-cell '+lvl:'pv-cell';
+    g.appendChild(cell);
+  });
+  // JSON
+  const out={columns:7,rows:Math.ceil(28/7),...st};
+  $('out').textContent=JSON.stringify(out,null,0);
+}
+render.styleEl=document.createElement('style');
+document.head.appendChild(render.styleEl);
+render.rootEl=document.documentElement;
+render();
+
+// 事件绑定
+function bind(id,cb){const el=$(id);el.addEventListener('input',()=>{const v=el.value;$(id.replace('s-','v-')).textContent=el.type==='color'?v:v;cb&&cb();render();});}
+['s-size','s-gap','s-radius','s-padx','s-pady'].forEach(x=>bind(x));
+['s-wratio'].forEach(x=>bind(x));
+$('s-alpha').addEventListener('input',()=>{$('v-alpha').textContent=$('s-alpha').value;render();});
+$('s-cbase').addEventListener('input',()=>{$('v-cbase').textContent=$('s-cbase').value;render();});
+$('s-week').addEventListener('change',render);
+$('seg-color').addEventListener('click',e=>{
+  const b=e.target.closest('button');if(!b)return;
+  $('seg-color').querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');render();
+});
+document.addEventListener('keydown',e=>{if(e.code==='Space'){e.preventDefault();litNow=sample();render();}});
+
+$('copy').addEventListener('click',()=>{
+  const t=$('out').textContent;
+  navigator.clipboard.writeText(t).then(()=>{$('copy').textContent='已复制 ✔';setTimeout(()=>$('copy').textContent='复制配置',1200);});
+});
+</script>
+</body>
+</html>
