@@ -80,6 +80,10 @@ export class MomentView extends ItemView {
 	private pulling = false;
 	private inOverview = false;
 
+	// 撤回后暂存，用于「重新编辑」
+	private retracted: { date: Date; msg: MomentMessage } | null = null;
+	private undoEl: HTMLElement | null = null;
+
 	constructor(leaf: WorkspaceLeaf, plugin: MomentPlugin) {
 		super(leaf);
 		this.plugin = plugin;
@@ -108,6 +112,7 @@ export class MomentView extends ItemView {
 
 	async onClose(): Promise<void> {
 		this.toTopEl?.remove();
+		this.undoEl?.remove();
 		this.coverEl?.remove();
 	}
 
@@ -641,7 +646,11 @@ export class MomentView extends ItemView {
 			// 整段自然往下排，交由页面整体滚动（无内层滚动条）
 			for (const m of g.msgs) {
 				this.feedHost.appendChild(
-					new FeedRow(m, (x) => this.imageRow(x)).render(m)
+					new FeedRow(
+						m,
+						(x) => this.imageRow(x),
+						() => this.retract(g.day, m)
+					).render(m)
 				);
 			}
 		}
@@ -845,26 +854,83 @@ export class MomentView extends ItemView {
 		return wrap;
 	}
 
-	/* ---------- 发布 ---------- */
-	private openPublish() {
+	/* ---------- 撤回 / 重新编辑 ---------- */
+	private retract(date: Date, msg: MomentMessage) {
+		new ConfirmModal(
+			this.app,
+			"撤回这条动态？",
+			"撤回后可从底部提示条点「重新编辑」继续。文件内该条会被移除，配图文件本身保留。",
+			async (ok) => {
+				if (!ok) return;
+				const removed = await this.store.removeMessage(date, msg);
+				if (!removed) {
+					new Notice("未找到该动态");
+					return;
+				}
+				this.retracted = { date, msg };
+				this.showUndo();
+				await this.refresh();
+			}
+		).open();
+	}
+
+	private showUndo() {
+		if (!this.undoEl) {
+			this.undoEl = document.createElement("div");
+			this.undoEl.addClass("moment-undo");
+			this.undoEl.innerHTML = UNDO_SVG;
+			const span = document.createElement("span");
+			span.textContent = "已撤回 · 点击重新编辑";
+			this.undoEl.appendChild(span);
+			this.undoEl.addEventListener("click", () => {
+				if (!this.retracted) return;
+				const { msg } = this.retracted;
+				this.openPublish({
+					text: msg.text,
+					mood: msg.mood,
+					images: msg.images,
+				});
+			});
+			document.body.appendChild(this.undoEl);
+		}
+		this.undoEl.classList.add("show");
+	}
+
+	private clearUndo() {
+		this.retracted = null;
+		this.undoEl?.classList.remove("show");
+	}
+
+	/* ---------- 发布 / 重新编辑 ---------- */
+	private openPublish(prefill?: {
+		text?: string;
+		mood?: string;
+		images?: string[];
+	}) {
 		const overlay = document.createElement("div");
 		overlay.addClass("moment-publish");
 		const card = overlay.createDiv({ cls: "moment-publish-card" });
 
 		const head = card.createDiv({ cls: "moment-publish-head" });
-		head.createDiv({ cls: "moment-publish-title", text: "此刻 · 发布" });
 		const close = head.createEl("button", { cls: "moment-publish-close" });
 		close.textContent = "×";
 		close.addEventListener("click", () => overlay.remove());
+		head.createDiv({ cls: "moment-publish-title", text: "此刻 · 发布" });
+		const send = head.createEl("button", {
+			cls: "moment-publish-send",
+			text: "发布",
+		});
 
 		const textarea = card.createEl("textarea", {
 			cls: "moment-publish-text",
 			attr: { placeholder: "此刻在想什么…" },
 		}) as HTMLTextAreaElement;
+		if (prefill?.text) textarea.value = prefill.text;
 
-		// 选中心情 + 附件
-		let mood: string | undefined;
+		// 选中心情 + 新附件 + 保留（重新编辑）的旧附件
+		let mood: string | undefined = prefill?.mood || undefined;
 		let files: File[] = [];
+		let keep: string[] = [...(prefill?.images || [])];
 
 		const addFiles = (added: File[]) => {
 			let changed = false;
@@ -895,8 +961,8 @@ export class MomentView extends ItemView {
 			sel.createEl("option", { value: NEW_MOOD, text: "＋ 新建心情…" });
 			sel.value = selected && moodCandidates().includes(selected) ? selected : "";
 		};
-		buildOptions();
-		sel.addEventListener("change", () => {
+		buildOptions(prefill?.mood);
+			sel.addEventListener("change", () => {
 			if (sel.value === NEW_MOOD) {
 				sel.value = "";
 				const modal = new NewMoodModal(this.plugin, (name) => {
@@ -915,10 +981,23 @@ export class MomentView extends ItemView {
 			mood = sel.value || undefined;
 		});
 
-		// 图片预览
+		// 图片预览：保留图（重新编辑的旧附件） + 新选图
 		const imgs = card.createDiv({ cls: "moment-publish-imgs" });
 		const renderImgs = () => {
 			imgs.empty();
+			keep.forEach((name, i) => {
+				const url = this.resourceUri(name);
+				if (!url) return;
+				const p = imgs.createEl(
+					"img",
+					{ cls: "moment-pending-img" }
+				) as HTMLImageElement;
+				p.src = url;
+				p.addEventListener("click", () => {
+					keep.splice(i, 1);
+					renderImgs();
+				});
+			});
 			files.forEach((f, i) => {
 				const url = URL.createObjectURL(f);
 				const p = imgs.createEl(
@@ -950,14 +1029,20 @@ export class MomentView extends ItemView {
 		setIcon(imgBtn, "image");
 		imgBtn.addEventListener("click", () => fileInput.click());
 
-		// 只能点击按钮发布
-		const send = footer.createEl("button", {
-			cls: "moment-publish-send",
-			text: "发布",
-		});
+		// 发布：右上角「发布」按钮
 		send.addEventListener(
 			"click",
-			() => this.publish(textarea.value, mood, files, () => overlay.remove())
+			() =>
+				this.publish(
+					textarea.value,
+					mood,
+					files,
+					keep,
+					() => {
+						overlay.remove();
+						this.clearUndo();
+					}
+				)
 		);
 
 		const hint = footer.createDiv({ cls: "moment-publish-hint" });
@@ -1005,30 +1090,39 @@ export class MomentView extends ItemView {
 		raw: string,
 		mood: string | undefined,
 		files: File[],
+		keep: string[],
 		done: () => void
 	) {
 		const text = raw.trim();
-		if (!text && !files.length) {
+		if (!text && !files.length && !keep.length) {
 			new Notice("写点什么再发布吧");
 			return;
 		}
 		const now = new Date();
-		const images: string[] = [];
+		const images: string[] = [...keep];
 		try {
 			if (files.length) {
-				await this.store.ensureAttachmentRoot();
-				for (const f of files) {
-					const ext = "." + (f.name.split(".").pop() || "png");
-					const buf = await f.arrayBuffer();
-					const dest = attachmentPath(this.plugin.settings, now, ext);
-					// 使用 vault，适配库内根目录
-					await this.store.ensureDir(
-						dest.substring(0, dest.lastIndexOf("/"))
-					);
-					await this.app.vault.createBinary(dest, buf);
-					images.push(dest.split("/").pop()!);
+					await this.store.ensureAttachmentRoot();
+					for (let i = 0; i < files.length; i++) {
+						const f = files[i];
+						const ext = "." + (f.name.split(".").pop() || "png");
+						const buf = await f.arrayBuffer();
+						// 同一秒多选多张时附加序号，避免文件名冲突
+						const suffix = files.length > 1 ? `-${i}` : "";
+						const dest = attachmentPath(
+							this.plugin.settings,
+							now,
+							ext,
+							suffix
+						);
+						// 使用 vault，适配库内根目录
+						await this.store.ensureDir(
+							dest.substring(0, dest.lastIndexOf("/"))
+						);
+						await this.app.vault.createBinary(dest, buf);
+						images.push(dest.split("/").pop()!);
+					}
 				}
-			}
 			const msg: MomentMessage = {
 				time: fmtTime(now),
 				mood,
@@ -1111,6 +1205,43 @@ class NewMoodModal extends Modal {
 	}
 }
 
+/** 通用确认弹窗（返回 true=确认 / false=取消） */
+class ConfirmModal extends Modal {
+	constructor(
+		app: App,
+		private title: string,
+		private message: string,
+		private result: (ok: boolean) => void
+	) {
+		super(app);
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.createEl("h3", { text: this.title });
+		contentEl.createEl("p", { text: this.message });
+		const btns = contentEl.createDiv({ cls: "modal-button-container" });
+		new ButtonComponent(btns)
+			.setButtonText("取消")
+			.onClick(() => {
+				this.result(false);
+				this.close();
+			});
+		new ButtonComponent(btns)
+			.setButtonText("确认撤回")
+			.setWarning()
+			.onClick(() => {
+				this.result(true);
+				this.close();
+			});
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+
 function fmtTime(d: Date): string {
 	const h = String(d.getHours()).padStart(2, "0");
 	const m = String(d.getMinutes()).padStart(2, "0");
@@ -1121,7 +1252,8 @@ function fmtTime(d: Date): string {
 class FeedRow {
 	constructor(
 		public data: MomentMessage,
-		private imgRenderer: (m: MomentMessage) => HTMLElement
+		private imgRenderer: (m: MomentMessage) => HTMLElement,
+		private onDelete?: () => void
 	) {}
 
 	render(m: MomentMessage): HTMLElement {
@@ -1137,6 +1269,15 @@ class FeedRow {
 		if (m.mood) {
 			const mm = meta.createDiv({ cls: "moment-mood", text: m.mood });
 			mm.textContent = m.mood;
+		}
+		if (this.onDelete) {
+			const del = meta.createDiv({ cls: "moment-delete" });
+			del.innerHTML = DEL_SVG;
+			del.setAttribute("title", "撤回");
+			del.addEventListener("click", (e) => {
+				e.stopPropagation();
+				this.onDelete?.();
+			});
 		}
 		if (m.text) {
 			const t = body.createDiv({ cls: "moment-post-text", text: m.text });
@@ -1186,6 +1327,19 @@ const NEXT_SVG =
 	`<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" ` +
 	`stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
 	`<path d="m9 18 6-6-6-6"/></svg>`;
+
+/** 撤回：垃圾桶图标 */
+const DEL_SVG =
+	`<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" ` +
+	`stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
+	`<path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/>` +
+	`<path d="M19 6v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6"/><path d="M10 11v6M14 11v6"/></svg>`;
+
+/** 撤回提示条：回到箭头图标 */
+const UNDO_SVG =
+	`<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" ` +
+	`stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
+	`<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>`;
 
 /** 日期分组头文案：今天 / 昨天 / 前天 / M月D日 */
 function fmtHead(d: Date): string {

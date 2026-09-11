@@ -48,17 +48,19 @@ export function coverPath(settings: MomentSettings): string {
 	return normalizePath(`${attachmentRoot(settings)}/${settings.coverName || "img.jpg"}`);
 }
 
-/** 按时间命名附件（当日落本月附件夹）：YYYY-M-D-HH-MM-SS.ext */
+/** 按时间命名附件（当日落本月附件夹）：YYYY-M-D-HH-MM-SS[-后缀].ext
+ *  后缀用于区分同一秒内多选的多张图片，避免文件名冲突 */
 export function attachmentPath(
 	settings: MomentSettings,
 	date: Date,
-	ext: string
+	ext: string,
+	suffix = ""
 ): string {
 	const p = dateParts(date);
 	const hh = String(date.getHours()).padStart(2, "0");
 	const mi = String(date.getMinutes()).padStart(2, "0");
 	const ss = String(date.getSeconds()).padStart(2, "0");
-	const name = `${p.dateKey}-${hh}-${mi}-${ss}${ext}`;
+	const name = `${p.dateKey}-${hh}-${mi}-${ss}${suffix}${ext}`;
 	return normalizePath(
 		`${attachmentRoot(settings)}/${p.monthDir}/${name}`
 	);

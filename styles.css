@@ -1,4 +1,4 @@
-﻿/* =========================================================
+/* =========================================================
    此刻 MOMENT · styles.css
    设计语言：米白 / 淡蓝 / 奶白底，亚克力磨砂玻璃、圆角、柔光阴影
    ========================================================= */
@@ -87,9 +87,17 @@ body.theme-dark {
 		linear-gradient(120deg, rgba(90, 167, 214, 0.55), rgba(122, 107, 184, 0.5)),
 		#dbe7f2;
 }
-/* 悬停展开背景整图（高度由 JS 按图片比例撑满；此值为未计算完成时的兜底） */
-.moment-cover:hover {
-	height: min(60vh, 560px);
+/* 悬停展开背景整图（高度由 JS 按图片比例撑满；此值为未计算完成时的兜底）。
+   仅在有鼠标的设备上触发；触摸端禁用伪 hover，避免展开后遮住右上角「＋」无法点按 */
+@media (hover: hover) and (pointer: fine) {
+	.moment-cover:hover {
+		height: min(60vh, 560px);
+	}
+}
+@media (hover: none), (pointer: coarse) {
+	.moment-cover {
+		height: 140px;
+	}
 }
 .moment-cover-img {
 	position: absolute;
@@ -131,9 +139,10 @@ body.theme-dark {
 	position: absolute;
 	right: 14px;
 	top: 12px;
-	z-index: 2;
-	width: 32px;
-	height: 32px;
+	z-index: 20;
+	pointer-events: auto;
+	width: 34px;
+	height: 34px;
 	border-radius: 50%;
 	background: rgba(255, 255, 255, 0.32);
 	backdrop-filter: blur(6px);
@@ -539,6 +548,27 @@ body.theme-dark {
 	font-size: 0.72rem;
 	color: var(--moment-accent);
 }
+.moment-delete {
+	margin-left: auto;
+	width: 22px;
+	height: 22px;
+	border-radius: 50%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--moment-muted);
+	cursor: pointer;
+	opacity: 0.55;
+	transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.moment-post:hover .moment-delete,
+.moment-delete:active {
+	opacity: 1;
+}
+.moment-delete:hover {
+	color: #e06c70;
+	background: rgba(224, 108, 112, 0.12);
+}
 .moment-mood {
 	font-size: 0.68rem;
 	padding: 1px 9px;
@@ -722,6 +752,41 @@ body.theme-dark {
 	transform: translateY(0);
 }
 
+/* ============ 撤回提示条（底部居中） ============ */
+.moment-undo {
+	position: fixed;
+	left: 50%;
+	bottom: 26px;
+	transform: translate(-50%, 12px);
+	z-index: 1000;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 16px;
+	max-width: 88vw;
+	border-radius: 22px;
+	background: rgba(28, 34, 52, 0.88);
+	backdrop-filter: blur(14px);
+	-webkit-backdrop-filter: blur(14px);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3);
+	color: #fff;
+	font-size: 0.82rem;
+	cursor: pointer;
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 0.22s ease, transform 0.22s ease, background 0.22s ease;
+}
+.moment-undo:hover {
+	background: rgba(28, 34, 52, 0.96);
+	color: #a8d4f0;
+}
+.moment-undo.show {
+	opacity: 1;
+	pointer-events: auto;
+	transform: translate(-50%, 0);
+}
+
 /* ============ 发布浮层 ============ */
 .moment-publish {
 	position: fixed;
@@ -752,12 +817,18 @@ body.theme-dark {
 	box-shadow: 0 0 0 4px rgba(90, 167, 214, 0.18);
 }
 .moment-publish-head {
+	position: relative;
 	display: flex;
-	justify-content: space-between;
 	align-items: center;
+	justify-content: space-between;
 	margin-bottom: 10px;
+	min-height: 36px;
 }
 .moment-publish-title {
+	position: absolute;
+	left: 50%;
+	transform: translateX(-50%);
+	white-space: nowrap;
 	font-weight: 700;
 	font-size: 0.95rem;
 	color: var(--moment-fore);
@@ -765,9 +836,18 @@ body.theme-dark {
 .moment-publish-close {
 	cursor: pointer;
 	color: var(--moment-muted);
-	font-size: 1.1rem;
+	font-size: 1.25rem;
 	line-height: 1;
+	width: 32px;
+	height: 32px;
+	border-radius: 50%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--moment-surface);
+	border: 1px solid var(--moment-rule);
 }
+.moment-publish-close:hover { background: var(--background-modifier-hover); }
 .moment-publish-text {
 	width: 100%;
 	font-family: inherit;
