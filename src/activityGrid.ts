@@ -1,7 +1,7 @@
-import { App, TFile } from "obsidian";
+import { App } from "obsidian";
 import type { MomentSettings } from "./settings";
 import type { ActivityCell } from "./types";
-import { parseMessages, splitFrontmatter } from "./dayFile";
+import { parseMessages, splitFrontmatter, readDayContent } from "./dayFile";
 import { dailyPath } from "./paths";
 import { dateParts } from "./settings";
 
@@ -14,7 +14,8 @@ export class ActivityGrid {
 
 	async compute(
 		app: App,
-		settings: MomentSettings
+		settings: MomentSettings,
+		fresh = false
 	): Promise<ActivityCell[]> {
 		const now = new Date();
 		const today = new Date(
@@ -29,16 +30,11 @@ export class ActivityGrid {
 			d.setDate(today.getDate() - i);
 			const dp = dateParts(d);
 			const path = dailyPath(settings, d);
-			const file = app.vault.getAbstractFileByPath(path);
+			const content = await readDayContent(app, path, fresh);
 			let count = 0;
-			if (file instanceof TFile) {
-				try {
-					const content = await app.vault.cachedRead(file);
-					const { body } = splitFrontmatter(content);
-					count = parseMessages(body).length;
-				} catch {
-					count = 0;
-				}
+			if (content != null) {
+				const { body } = splitFrontmatter(content);
+				count = parseMessages(body).length;
 			}
 			cells.push({
 				date: dp.dateKey,

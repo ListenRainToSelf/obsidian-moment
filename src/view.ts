@@ -37,8 +37,38 @@ const MOOD_PALETTE = [
 // 心情下拉里“新建心情”哨兵值
 const NEW_MOOD = "__new_mood__";
 
-/** 信息流往前回溯的天数（跳过空天） */
-const FEED_DAYS = 30;
+/** 信息流单次加载 / 渲染的天数（按已有的日文件）；触底后再拉取下一批 */
+const FEED_BATCH = 30;
+/** 自动卸载保留窗口：视口上方 / 下方额外保留渲染的像素高度 */
+const FEED_RETAIN_ABOVE = 1400;
+const FEED_RETAIN_BELOW = 2000;
+
+/** 信息流里的一个「天分组」（一天 = 一个窗口单元） */
+interface FeedGroupEntry {
+	date: Date;
+	msgs: MomentMessage[];
+	el: HTMLElement; // 分组容器（卸载后保留此节点做高度占位）
+	height: number; // 最近一次渲染时测得的高度
+	rendered: boolean; // 当前是否已挂载内容
+	sig: string; // 内容签名，用于高度缓存命中判断
+}
+
+/** 内容签名：条数 + 文本总长 + 图片总数，用于判断高度缓存是否仍可用 */
+function feedSig(msgs: MomentMessage[]): string {
+	let len = 0;
+	let imgs = 0;
+	for (const m of msgs) {
+		len += m.text ? m.text.length : 0;
+		imgs += m.images.length;
+	}
+	return `${msgs.length}:${len}:${imgs}`;
+}
+
+/** 高度缓存键：按年月日唯一标识一天 */
+function feedKey(d: Date): string {
+	const p = dateParts(d);
+	return `${p.year}-${p.month}-${p.day}`;
+}
 
 /** 把占比气泡定位到某段的正上方（含 bar 在统计层内的左偏移，避免被遮罩干扰） */
 function placePop(pop: HTMLElement, seg: HTMLElement, bar: HTMLElement) {
@@ -67,6 +97,7 @@ export class MomentView extends ItemView {
 	private quoteEl!: HTMLElement;
 	private feedHost!: HTMLElement;
 	private feedHeadEl!: HTMLElement;
+	private feedMoreEl!: HTMLElement;
 	private toTopEl!: HTMLElement;
 	private overviewEl!: HTMLElement;
 	private closeOvEl!: HTMLElement;
@@ -84,6 +115,18 @@ export class MomentView extends ItemView {
 	// 撤回后暂存，用于「重新编辑」
 	private retracted: { date: Date; msg: MomentMessage } | null = null;
 	private undoEl: HTMLElement | null = null;
+
+	// 信息流懒加载
+	private feedDates: Date[] = []; // 已存在「日文件」的日期队列（新 → 旧）
+	private feedRendered = 0; // 队列中已消费到的位置（游标）
+	private feedHasGroup = false; // 是否已渲染出至少一个分组
+	private feedLoading = false; // 是否正在加载 / 重绘（占位，避免并发插入）
+	private feedGen = 0; // 渲染代号：refresh 自增以中断过期的异步加载
+
+	// 信息流自动卸载（窗口化）
+	private feedGroups: FeedGroupEntry[] = []; // 已创建的分组（按日期倒序）
+	private feedHeights = new Map<string, { sig: string; h: number }>(); // 高度缓存
+	private feedWinRaf = 0; // 窗口计算的 rAF 句柄（节流）
 
 	constructor(leaf: WorkspaceLeaf, plugin: MomentPlugin) {
 		super(leaf);
@@ -107,11 +150,15 @@ export class MomentView extends ItemView {
 		this.buildDom();
 		this.bindPull();
 		this.applyTheme();
+		window.addEventListener("resize", this.onWindowResize);
 		await this.store.ensureRoot(); // 创建「此刻」根目录与附件目录
 		await this.refresh();
 	}
 
 	async onClose(): Promise<void> {
+		window.removeEventListener("resize", this.onWindowResize);
+		if (this.feedWinRaf) window.cancelAnimationFrame(this.feedWinRaf);
+		this.feedWinRaf = 0;
 		this.toTopEl?.remove();
 		this.undoEl?.remove();
 		this.coverEl?.remove();
@@ -178,6 +225,8 @@ export class MomentView extends ItemView {
 		const feedWrap = root.createDiv({ cls: "moment-feed-wrap" });
 		this.feedHeadEl = feedWrap.createDiv({ cls: "moment-feed-head" });
 		this.feedHost = feedWrap.createDiv({ cls: "moment-feed" });
+		// 触底加载提示条（哨兵），滚到接近底部时拉取下一批
+		this.feedMoreEl = feedWrap.createDiv({ cls: "moment-feed-more" });
 
 		// 页面整体滚动监听，用于“回到顶部”按钮显隐
 		root.addEventListener("scroll", this.onPageScroll);
@@ -203,7 +252,48 @@ export class MomentView extends ItemView {
 				? this.contentEl.scrollTop > 160
 				: false);
 		this.toTopEl?.classList.toggle("show", show);
+		if (this.inOverview) return;
+		// 滚动接近底部时，拉取并渲染下一批动态
+		this.maybeLoadMoreFeed();
+		// 卸载移出可视窗口的分组，控制 DOM / 资源占用
+		this.scheduleFeedWindow();
 	};
+
+	private onWindowResize = () => {
+		this.scheduleFeedWindow();
+	};
+
+	/** 用 rAF 节流窗口计算，避免每个滚动事件都触发大量布局读取 */
+	private scheduleFeedWindow() {
+		if (this.feedWinRaf) return;
+		this.feedWinRaf = window.requestAnimationFrame(() => {
+			this.feedWinRaf = 0;
+			this.applyFeedWindow();
+		});
+	}
+
+	/**
+	 * 自动卸载：只保留视口上下若干像素内的分组为「已渲染」，
+	 * 其余分组清空内容并保留原高度占位（滚动位置不变）。
+	 */
+	private applyFeedWindow() {
+		if (this.inOverview || !this.feedGroups.length) return;
+		const host = this.contentEl.getBoundingClientRect();
+		const topEdge = host.top - FEED_RETAIN_ABOVE;
+		const botEdge = host.bottom + FEED_RETAIN_BELOW;
+		// 第一遍只读：采集各分组当前位置，避免「读-写」交错触发反复回流
+		const mounts: FeedGroupEntry[] = [];
+		const unmounts: FeedGroupEntry[] = [];
+		for (const g of this.feedGroups) {
+			const r = g.el.getBoundingClientRect();
+			const inWindow = r.bottom > topEdge && r.top < botEdge;
+			if (inWindow && !g.rendered) mounts.push(g);
+			else if (!inWindow && g.rendered) unmounts.push(g);
+		}
+		// 第二遍只写：卸载保留高度、挂载沿用缓存高度，滚动不跳动
+		for (const g of unmounts) this.unmountFeedGroup(g);
+		for (const g of mounts) this.mountFeedGroup(g);
+	}
 
 	private buildOverview(root: HTMLElement) {
 		this.overviewEl = root.createDiv({ cls: "moment-overview" });
@@ -275,8 +365,8 @@ export class MomentView extends ItemView {
 	}
 
 	/* ---------- 供插件入口调用 ---------- */
-	async refreshPublic() {
-		return this.refresh();
+	async refreshPublic(fresh = false) {
+		return this.refresh(fresh);
 	}
 	renderCoverPublic() {
 		this.renderCover();
@@ -296,18 +386,18 @@ export class MomentView extends ItemView {
 	}
 
 	/* ---------- 刷新 ---------- */
-	async refresh() {
+	async refresh(fresh = false) {
 		this.renderCover();
 		await Promise.all([
-			this.renderActivity(),
-			this.renderFeed(),
+			this.renderActivity(fresh),
+			this.renderFeed(fresh),
 			this.renderQuote(),
-			this.renderMoodStats(),
+			this.renderMoodStats(fresh),
 		]);
 	}
 
 	/** 封面悬停层：持续活跃 / 日常总数 / 今日日常 + 心情占比单长条 */
-	private async renderMoodStats() {
+	private async renderMoodStats(fresh = false) {
 		const now = new Date();
 		const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 		const todayKey = dateParts(today).dateKey;
@@ -319,7 +409,7 @@ export class MomentView extends ItemView {
 		for (let i = 0; i < range; i++) {
 			const d = new Date(today);
 			d.setDate(today.getDate() - i);
-			const day = await this.store.readDay(d);
+			const day = await this.store.readDay(d, fresh);
 			if (!day || !day.messages.length) continue;
 			const key = dateParts(d).dateKey;
 			dayCounts.set(key, day.messages.length);
@@ -490,7 +580,7 @@ export class MomentView extends ItemView {
 		);
 	}
 
-	private async renderActivity() {
+	private async renderActivity(fresh = false) {
 		// 1) 准备星期栏（右侧，一~日共 7 行；行序被旋转，令“今日”恒在底部/右下格）
 		const today = new Date();
 		const t0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
@@ -515,7 +605,7 @@ export class MomentView extends ItemView {
 		const spanDays = (weeks - 1) * ACTIVITY_COLS + todayWd + 1;
 
 		const grid = new ActivityGrid(spanDays, ACTIVITY_COLS);
-		const cells = await grid.compute(this.app, this.plugin.settings);
+		const cells = await grid.compute(this.app, this.plugin.settings, fresh);
 		const total = cells.reduce((n, c) => n + c.count, 0);
 		this.gridHeadEl.innerHTML =
 			`<span>活跃度</span><b>近${spanDays}天 · ${total} 条</b>`;
@@ -621,41 +711,229 @@ export class MomentView extends ItemView {
 			"”";
 	}
 
-	private async renderFeed() {
-		const now = new Date();
-		const t0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-		// 往前加载最近 FEED_DAYS 天的动态（跳过空天），按日期分组、最新在上
-		const groups: { day: Date; msgs: MomentMessage[] }[] = [];
-		for (let i = 0; i < FEED_DAYS; i++) {
-			const d = new Date(t0);
-			d.setDate(t0.getDate() - i);
-			const day = await this.store.readDay(d);
-			if (!day || !day.messages.length) continue;
-			const msgs = [...day.messages].reverse(); // 该天内最新在上
-			groups.push({ day: d, msgs });
-		}
+	/**
+	 * 分批渲染信息流：先枚举库内真实存在的日文件（新 → 旧）作为队列，
+	 * 首屏只渲染最近一批，滚动到底部再拉取下一批，避免一次性读取 / 渲染过长历史。
+	 * 刷新（心跳 / 事件）时保留用户已加载到的深度，不会把长列表缩回首屏。
+	 *
+	 * 与旧实现的关键差异：不再「按天从今天往前盲扫」，而是只在真实存在的
+	 * 日文件之间翻页 —— 既不会在数据结束后的空天上无限空转（永远触不到底），
+	 * 也保证批次严格按日期倒序追加（不会出现旧的跑到新的前面）。
+	 */
+	private async renderFeed(fresh = false) {
+		const gen = ++this.feedGen;
+		const keep = Math.max(FEED_BATCH, this.feedRendered); // 保留已加载深度
+		this.feedDates = this.store.listDayDates();
+		// 重绘期间占住加载位：期间滚动事件不会再插入并发批次
+		this.feedLoading = true;
 		this.feedHeadEl.empty();
-		this.feedHost.empty();
-		if (!groups.length) {
-			this.feedHost.createDiv({ cls: "moment-empty" }).textContent =
-				"还没有动态。点右上角 ＋，把此刻随手记下来。";
+		this.setFeedMore("");
+
+		// 先把前 keep 天读成「渲染计划」（只读数据，不改动 DOM）
+		const plan: { date: Date; msgs: MomentMessage[] }[] = [];
+		let cursor = 0;
+		while (
+			gen === this.feedGen &&
+			cursor < keep &&
+			cursor < this.feedDates.length
+		) {
+			const d = this.feedDates[cursor++];
+			const day = await this.store.readDay(d, fresh);
+			if (gen !== this.feedGen) return;
+			if (!day || !day.messages.length) continue;
+			plan.push({ date: d, msgs: [...day.messages].reverse() }); // 该天内最新在上
+		}
+		if (gen !== this.feedGen) return;
+
+		// 与现有分组逐项比对（日期 + 内容签名）：完全一致就跳过重建。
+		// 心跳 / 库事件刷新时内容通常没变，跳过可避免整段 DOM 反复销毁重建 ——
+		// 那正是滚动 / 静置时「抽动」的主因（重建会让图片全部重新加载）。
+		const same =
+			plan.length > 0 &&
+			plan.length === this.feedGroups.length &&
+			plan.every((p, i) => {
+				const g = this.feedGroups[i];
+				return (
+					feedKey(g.date) === feedKey(p.date) &&
+					g.sig === feedSig(p.msgs)
+				);
+			});
+
+		this.feedRendered = cursor;
+		this.feedLoading = false;
+
+		if (same) {
+			// 内容未变：不碰 DOM，仅刷新哨兵状态与可视窗口
+			this.updateFeedMoreState();
+			this.scheduleFeedWindow();
 			return;
 		}
-		for (const g of groups) {
-			const dayHead = this.feedHost.createDiv({ cls: "moment-feed-day" });
-			const chip = dayHead.createDiv({ cls: "moment-feed-chip" });
-			chip.createSpan({ text: fmtHead(g.day) });
-			chip.createSpan({ cls: "cnt", text: `${g.msgs.length} 条动态` });
-			// 整段自然往下排，交由页面整体滚动（无内层滚动条）
-			for (const m of g.msgs) {
-				this.feedHost.appendChild(
-					new FeedRow(
-						m,
-						(x) => this.imageRow(x),
-						() => this.retract(g.day, m)
-					).render(m)
-				);
+
+		// 内容有变：记录滚动位置后重建，重建完再还原，减少跳动
+		const prevTop = this.contentEl.scrollTop;
+		this.feedHost.empty();
+		this.feedGroups = [];
+		this.feedHasGroup = false;
+		for (const p of plan) {
+			this.appendFeedGroup(p.date, p.msgs);
+			this.feedHasGroup = true;
+		}
+		if (!this.feedHasGroup) {
+			this.feedHost.createDiv({ cls: "moment-empty" }).textContent =
+				"还没有动态。点右上角 ＋，把此刻随手记下来。";
+		}
+
+		await this.fillViewport(fresh);
+		if (gen !== this.feedGen) return;
+		// 重建后按窗口卸载多余分组，并恢复滚动位置
+		this.applyFeedWindow();
+		if (prevTop > 0) this.contentEl.scrollTop = prevTop;
+		this.updateFeedMoreState();
+	}
+
+	/** 拉取并追加下一批（供滚动触底与首屏兜底复用） */
+	private async loadMoreFeed(fresh = false) {
+		const gen = this.feedGen;
+		if (this.feedLoading || this.inOverview) return;
+		if (this.feedRendered >= this.feedDates.length) return;
+		this.feedLoading = true;
+		this.setFeedMore("加载更早的动态…");
+		try {
+			let added = await this.loadFeedBatch(fresh, gen);
+			if (gen !== this.feedGen) return;
+			// 整批日文件都无正文时继续补，直到找到内容或翻到队尾
+			while (
+				added === 0 &&
+				!this.feedHasGroup &&
+				this.feedRendered < this.feedDates.length
+			) {
+				added = await this.loadFeedBatch(fresh, gen);
+				if (gen !== this.feedGen) return;
 			}
+		} finally {
+			if (gen === this.feedGen) this.feedLoading = false;
+		}
+		this.updateFeedMoreState();
+		// 追加后重算可视窗口：把离视口过远的旧分组卸载掉
+		this.scheduleFeedWindow();
+	}
+
+	/** 消费队列中接下来的一批日期（最多 FEED_BATCH 个），返回本批新增分组数 */
+	private async loadFeedBatch(fresh: boolean, gen: number): Promise<number> {
+		const from = this.feedRendered;
+		const to = Math.min(from + FEED_BATCH, this.feedDates.length);
+		let added = 0;
+		for (let i = from; i < to; i++) {
+			if (gen !== this.feedGen) return added;
+			const d = this.feedDates[i];
+			const day = await this.store.readDay(d, fresh);
+			if (gen !== this.feedGen) return added;
+			if (!day || !day.messages.length) continue;
+			this.appendFeedGroup(d, [...day.messages].reverse()); // 该天内最新在上
+			added++;
+			this.feedHasGroup = true;
+		}
+		this.feedRendered = to;
+		return added;
+	}
+
+	/**
+	 * 追加一天的分组容器（一天 = 一个自动卸载单元）。
+	 * 容器先渲染出内容；离视口过远的分组随后由 applyFeedWindow 卸载，
+	 * 卸载时保留其高度占位，因此整页滚动位置不会跳动。
+	 */
+	private appendFeedGroup(day: Date, msgs: MomentMessage[]) {
+		const el = this.feedHost.createDiv({ cls: "moment-feed-group" });
+		const entry: FeedGroupEntry = {
+			date: day,
+			msgs,
+			el,
+			height: 0,
+			rendered: false,
+			sig: feedSig(msgs),
+		};
+		this.feedGroups.push(entry);
+		this.mountFeedGroup(entry);
+	}
+
+	/** 渲染一个分组的正文：分组头（日期 + 条数）+ 该天全部动态 */
+	private renderGroupContent(g: FeedGroupEntry) {
+		const dayHead = g.el.createDiv({ cls: "moment-feed-day" });
+		const chip = dayHead.createDiv({ cls: "moment-feed-chip" });
+		chip.createSpan({ text: fmtHead(g.date) });
+		chip.createSpan({ cls: "cnt", text: `${g.msgs.length} 条动态` });
+		for (const m of g.msgs) {
+			g.el.appendChild(
+				new FeedRow(
+					m,
+					(x) => this.imageRow(x),
+					() => this.retract(g.date, m)
+				).render(m)
+			);
+		}
+	}
+
+	/** 挂载分组内容；命中高度缓存时先按缓存高度占位，减少重排跳动 */
+	private mountFeedGroup(g: FeedGroupEntry) {
+		if (g.rendered) return;
+		g.rendered = true;
+		g.el.removeClass("moment-feed-group--void");
+		const cached = this.feedHeights.get(feedKey(g.date));
+		g.el.style.height =
+			cached && cached.sig === g.sig ? `${cached.h}px` : "";
+		g.el.empty();
+		this.renderGroupContent(g);
+		// 渲染完成，交还给内容自适应高度
+		g.el.style.height = "";
+	}
+
+	/** 卸载分组内容，但保留其高度占位，保证滚动位置不跳动 */
+	private unmountFeedGroup(g: FeedGroupEntry) {
+		if (!g.rendered) return;
+		const h = g.el.getBoundingClientRect().height;
+		g.height = h;
+		this.feedHeights.set(feedKey(g.date), { sig: g.sig, h });
+		g.el.empty();
+		g.el.style.height = `${h}px`;
+		g.el.addClass("moment-feed-group--void");
+		g.rendered = false;
+	}
+
+	/** 滚动接近底部时拉取下一批 */
+	private maybeLoadMoreFeed() {
+		if (this.inOverview || this.feedLoading) return;
+		if (this.feedRendered >= this.feedDates.length) return;
+		const el = this.contentEl;
+		if (el.scrollTop + el.clientHeight >= el.scrollHeight - 400) {
+			void this.loadMoreFeed();
+		}
+	}
+
+	/** 内容不足以产生滚动时继续拉取，直到可滚动或翻到队尾 */
+	private async fillViewport(fresh = false) {
+		const el = this.contentEl;
+		while (
+			this.feedRendered < this.feedDates.length &&
+			!this.feedLoading &&
+			el.scrollHeight <= el.clientHeight + 400
+		) {
+			const before = this.feedRendered;
+			await this.loadMoreFeed(fresh);
+			if (this.feedRendered === before) break;
+		}
+	}
+
+	private setFeedMore(text: string) {
+		if (!this.feedMoreEl) return;
+		this.feedMoreEl.textContent = text;
+		this.feedMoreEl.classList.toggle("show", !!text);
+	}
+
+	private updateFeedMoreState() {
+		if (this.feedRendered >= this.feedDates.length) {
+			this.setFeedMore(this.feedHasGroup ? "没有更早的动态了" : "");
+		} else {
+			this.setFeedMore("");
 		}
 	}
 

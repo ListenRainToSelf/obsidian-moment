@@ -6,6 +6,7 @@ import {
 	monthBodyDir,
 	monthAttachmentDir,
 	attachmentRoot,
+	bodyRoot,
 } from "./paths";
 import { dateParts } from "./settings";
 
@@ -119,6 +120,36 @@ function toISO(d: Date): string {
 	return d.toISOString();
 }
 
+/**
+ * 读取指定路径的文本内容。
+ * 默认走 Obsidian 索引 + cachedRead（快）；当文件未被索引、缓存读取失败，
+ * 或 fresh=true（轮询兜底库外改动）时，回落到直接读磁盘（vault.adapter）。
+ */
+export async function readDayContent(
+	app: App,
+	path: string,
+	fresh = false
+): Promise<string | null> {
+	if (!fresh) {
+		const file = app.vault.getAbstractFileByPath(path);
+		if (file instanceof TFile) {
+			try {
+				return await app.vault.cachedRead(file);
+			} catch {
+				/* 缓存读取失败则回落到磁盘 */
+			}
+		}
+	}
+	try {
+		if (await app.vault.adapter.exists(path)) {
+			return await app.vault.adapter.read(path);
+		}
+	} catch {
+		/* 磁盘不存在或读取失败 */
+	}
+	return null;
+}
+
 export class DayFileStore {
 	constructor(private app: App, private settings: MomentSettings) {}
 
@@ -128,18 +159,46 @@ export class DayFileStore {
 		return !!this.app.vault.getAbstractFileByPath(path);
 	}
 
-	/** 读取某天；不存在或解析失败返回 null */
-	async readDay(date: Date): Promise<MomentDay | null> {
+	/**
+	 * 枚举库内真实存在的「日文件」日期，按时间倒序（新 → 旧）。
+	 * 仅收录符合 `<根>/<年-月>/<年-月-日>.md` 结构的文件，并校验年月一致。
+	 * 信息流据此分页：只翻真实存在的天，既不会乱序，也不会在空天上无限空转。
+	 */
+	listDayDates(): Date[] {
+		const root = bodyRoot(this.settings);
+		const prefix = root ? root + "/" : "";
+		const out: Date[] = [];
+		for (const f of this.app.vault.getFiles()) {
+			if (prefix && !f.path.startsWith(prefix)) continue;
+			const rel = prefix ? f.path.slice(prefix.length) : f.path;
+			const m = rel.match(
+				/^(\d{4})-(\d{1,2})\/(\d{4})-(\d{1,2})-(\d{1,2})\.md$/
+			);
+			if (!m || m[1] !== m[3] || m[2] !== m[4]) continue;
+			const y = +m[1];
+			const mo = +m[2];
+			const day = +m[5];
+			const dt = new Date(y, mo - 1, day);
+			// 校验为合法日期（排除 2026-2-31 之类）
+			if (
+				dt.getFullYear() !== y ||
+				dt.getMonth() !== mo - 1 ||
+				dt.getDate() !== day
+			)
+				continue;
+			out.push(dt);
+		}
+		out.sort((a, b) => b.getTime() - a.getTime());
+		return out;
+	}
+
+	/** 读取某天；不存在或解析失败返回 null。
+	 *  fresh=true 时强制读磁盘（绕过 Obsidian 缓存），用于轮询兜底库外改动。 */
+	async readDay(date: Date, fresh = false): Promise<MomentDay | null> {
 		const p = dateParts(date);
 		const path = dailyPath(this.settings, date);
-		const file = this.app.vault.getAbstractFileByPath(path);
-		if (!(file instanceof TFile)) return null;
-		let content: string;
-		try {
-			content = await this.app.vault.cachedRead(file);
-		} catch {
-			return null;
-		}
+		const content = await readDayContent(this.app, path, fresh);
+		if (content == null) return null;
 		const { fm, body } = splitFrontmatter(content);
 		const messages = parseMessages(body);
 		const thumbs = collectThumbs(messages);

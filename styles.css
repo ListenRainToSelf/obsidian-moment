@@ -471,6 +471,15 @@ body.theme-dark {
 	padding: 0 14px 24px;
 	position: relative;
 }
+/* 信息流分组容器：一天一组，作为「自动卸载」的窗口单元。
+   flow-root 让内部末尾外边距不外溢，保证卸载/挂载时高度精确不变（滚动不跳动）。 */
+.moment-feed-group {
+	display: flow-root;
+}
+/* 被卸载（移出可视窗口）的分组：清空内容并保留原高度占位，防止滚动抖动 */
+.moment-feed-group--void {
+	overflow: hidden;
+}
 .moment-feed-head {
 	padding: 10px 14px 6px;
 	display: flex;
@@ -499,6 +508,19 @@ body.theme-dark {
 	justify-content: center;
 	padding: 6px 0 8px;
 }
+/* 信息流触底加载提示 / 到底提示（默认隐藏，.show 时显示） */
+.moment-feed-more {
+	display: none;
+	text-align: center;
+	font-size: 0.72rem;
+	color: var(--moment-muted);
+	letter-spacing: 0.02em;
+	padding: 8px 14px 22px;
+}
+.moment-feed-more.show {
+	display: block;
+	animation: moment-fade 0.22s ease;
+}
 .moment-post {
 	display: flex;
 	align-items: flex-start;
@@ -512,7 +534,6 @@ body.theme-dark {
 	backdrop-filter: blur(10px);
 	-webkit-backdrop-filter: blur(10px);
 	transition: transform 0.15s ease, box-shadow 0.15s ease;
-	animation: moment-rise 0.22s ease;
 }
 .moment-post:hover {
 	transform: translateY(-1px);
@@ -1176,10 +1197,6 @@ body.is-mobile .moment-to-top {
 }
 
 /* ============ 动效 ============ */
-@keyframes moment-rise {
-	from { opacity: 0; transform: translateY(8px); }
-	to { opacity: 1; transform: translateY(0); }
-}
 @keyframes moment-fade {
 	from { opacity: 0; } to { opacity: 1; }
 }
@@ -1190,7 +1207,6 @@ body.is-mobile .moment-to-top {
 
 /* ============ 无障碍：减弱动效 ============ */
 @media (prefers-reduced-motion: reduce) {
-	.moment-post { animation: moment-fade 0.12s ease; }
 	.moment-overview { transition: opacity 0.18s ease; }
 	.moment-plus, .moment-publish-send, .moment-cell { transition: none; }
 }

@@ -57,6 +57,13 @@ export default class MomentPlugin extends Plugin {
 			window.setInterval(() => this.heartbeat(), HEARTBEAT_MS)
 		);
 
+		// 窗口重新可见/获得焦点时立即做一次磁盘刷新：
+		// 隐藏期间心跳会被跳过，避免切回后内容滞留
+		this.registerDomEvent(document, "visibilitychange", () => {
+			if (document.visibilityState === "visible") this.refreshViews(true);
+		});
+		this.registerDomEvent(window, "focus", () => this.refreshViews(true));
+
 		// 启动时尝试打开一次（用户可从命令手动开）
 		if (this.app.workspace.getLeavesOfType(MOMENT_VIEW_TYPE).length) {
 			this.refreshViews();
@@ -150,14 +157,14 @@ export default class MomentPlugin extends Plugin {
 	}
 
 	private heartbeat() {
-		// 简单比对背景是否变化 + 刷新
-		this.refreshViews();
+		// 轮询兜底：库外改动可能不在 Obsidian 索引/缓存中，强制读磁盘刷新
+		this.refreshViews(true);
 	}
 
-	private refreshViews() {
+	private refreshViews(fresh = false) {
 		const v = this.ensureView();
 		if (v && document.visibilityState === "visible") {
-			v.refreshPublic();
+			v.refreshPublic(fresh);
 		}
 	}
 
