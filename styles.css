@@ -39,9 +39,6 @@ body.theme-dark {
 	display: flex;
 	flex-direction: column;
 	height: 100%;
-	/* 归零 Obsidian .view-content 默认内边距，实现封面「贴边」，
-	   并让封面内按钮与全览覆盖层按钮共用同一坐标、保证对齐 */
-	padding: 0;
 	background:
 		radial-gradient(120% 120% at 100% 0%, rgba(90, 167, 214, 0.16), transparent 55%),
 		radial-gradient(120% 120% at 0% 100%, rgba(122, 107, 184, 0.14), transparent 55%),

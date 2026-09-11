@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-moment",
-	"version": "0.2.3",
+	"version": "0.2.4",
 	"description": "此刻 MOMENT · 朋友圈式日记插件",
 	"main": "main.js",
 	"scripts": {
