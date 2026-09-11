@@ -69,6 +69,7 @@ export class MomentView extends ItemView {
 	private feedHeadEl!: HTMLElement;
 	private toTopEl!: HTMLElement;
 	private overviewEl!: HTMLElement;
+	private closeOvEl!: HTMLElement;
 	private ovScrollEl!: HTMLElement;
 	private ovLabelEl!: HTMLElement;
 	private segEls: Map<string, HTMLElement> = new Map();
@@ -145,6 +146,14 @@ export class MomentView extends ItemView {
 		navBtn.addEventListener("click", () =>
 			this.toggleOverview(!this.inOverview)
 		);
+		// 关闭全览（与打开按钮同在封面左上角，同坐标保证严格重叠）
+		// 该按钮独立存在以便总览覆盖层可正常关闭，默认隐藏、全览时显示
+		this.closeOvEl = this.coverEl.createEl("button", {
+			cls: "moment-ov-close",
+			attr: { title: "退出全览" },
+		});
+		this.closeOvEl.innerHTML = EXIT_SVG;
+		this.closeOvEl.addEventListener("click", () => this.toggleOverview(false));
 		this.sigEl = this.coverEl.createDiv({ cls: "moment-signature" });
 		// 心情统计：仅鼠标悬停封面时，从底部渐变模糊层上滑显示
 		this.statsEl = this.coverEl.createDiv({ cls: "moment-stats" });
@@ -212,13 +221,7 @@ export class MomentView extends ItemView {
 				}
 			});
 		}
-		// 退出全览（右上角，保证总览可关闭）
-		const closeBtn = this.overviewEl.createEl("button", {
-			cls: "moment-ov-close",
-			attr: { title: "退出全览" },
-		});
-		closeBtn.innerHTML = EXIT_SVG;
-		closeBtn.addEventListener("click", () => this.toggleOverview(false));
+		// 退出全览按钮现已在封面内创建（closeOvEl），与打开按钮同坐标
 		this.ovScrollEl = this.overviewEl.createDiv({ cls: "moment-ov-scroll" });
 		this.ovLabelEl = this.overviewEl.createDiv({ cls: "moment-ov-label" });
 		this.ovScrollEl.addEventListener("wheel", this.onWheel, { passive: false });
@@ -776,8 +779,20 @@ export class MomentView extends ItemView {
 	}
 
 	/* ---------- 全览 ---------- */
+	private overviewRestoreTop = 0;
 	private toggleOverview(open: boolean) {
 		this.inOverview = open;
+		const root = this.contentEl;
+		if (open) {
+			// 锁定外层整页滚动并回到顶部，确保 full 覆盖层绝对罩住可视区
+			this.overviewRestoreTop = root.scrollTop;
+			root.scrollTop = 0;
+			root.classList.add("moment-overviewing");
+		} else {
+			root.classList.remove("moment-overviewing");
+			root.scrollTop = this.overviewRestoreTop;
+			this.onPageScroll();
+		}
 		this.overviewEl.classList.toggle("open", open);
 		if (open) this.renderOverview();
 	}

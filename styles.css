@@ -39,6 +39,9 @@ body.theme-dark {
 	display: flex;
 	flex-direction: column;
 	height: 100%;
+	/* 归零 Obsidian .view-content 默认内边距，实现封面「贴边」，
+	   并让封面内按钮与全览覆盖层按钮共用同一坐标、保证对齐 */
+	padding: 0;
 	background:
 		radial-gradient(120% 120% at 100% 0%, rgba(90, 167, 214, 0.16), transparent 55%),
 		radial-gradient(120% 120% at 0% 100%, rgba(122, 107, 184, 0.14), transparent 55%),
@@ -188,24 +191,28 @@ body.theme-dark {
 	transform: scale(1.08);
 	background: rgba(255, 255, 255, 0.45);
 }
-/* 退出全览（全览右上角：叉号） */
+/* 退出全览（封面左上角，与「打开全览」按钮同容器同坐标、必严格重叠）：
+   默认隐藏，仅在进入全览时显示；z-index 高于全览覆盖层以便可点击关闭 */
 .moment-ov-close {
 	position: absolute;
 	top: 12px;
-	right: 14px;
-	z-index: 6;
+	left: 14px;
+	z-index: 30;
+	display: none;
 	width: 32px;
 	height: 32px;
 	border-radius: 50%;
 	border: 1px solid var(--moment-rule);
-	background: var(--moment-surface);
+	background: var(--moment-surface-solid);
 	color: var(--moment-muted);
-	display: flex;
 	align-items: center;
 	justify-content: center;
 	cursor: pointer;
 	box-shadow: var(--moment-shadow);
 	transition: transform 0.15s ease, background 0.15s ease;
+}
+.moment-view.moment-overviewing .moment-ov-close {
+	display: flex;
 }
 .moment-ov-close:hover {
 	transform: scale(1.08);
@@ -751,6 +758,11 @@ body.theme-dark {
 	pointer-events: auto;
 	transform: translateY(0);
 }
+/* 手机端：上移回到顶部按钮，避开 Obsidian 官方底部标签/导航栏 */
+body.is-mobile .moment-to-top {
+	bottom: 88px;
+	right: 14px;
+}
 
 /* ============ 撤回提示条（底部居中） ============ */
 .moment-undo {
@@ -965,6 +977,12 @@ body.theme-dark {
 }
 
 /* ============ 全览视图 ============ */
+/* 全览打开时锁定外层整页滚动：让覆盖层内的 absolute 定位始终罩住可视区域，
+   避免底部出现页面滚轮、或滚动后露出下层常规视图 */
+.moment-view.moment-overviewing { overflow-y: hidden; }
+/* 全览打开时隐藏下层封面的「＋」与全览入口，避免 z-index 透出 */
+.moment-view.moment-overviewing .moment-plus,
+.moment-view.moment-overviewing .moment-nav-btn { display: none; }
 .moment-overview {
 	position: absolute;
 	inset: 0;
