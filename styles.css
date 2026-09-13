@@ -27,6 +27,26 @@ body {
 	--moment-shadow: 0 8px 30px var(--background-modifier-box-shadow);
 }
 
+/* ============ 内置界面主题（设置里可切换） ============
+   预设只替换「主题色一族」：底色 / 文字 / 边框 / 阴影仍取自 Obsidian 主题，
+   所以同一套主题在浅色与深色下都能用，明暗始终由 Obsidian 主题决定。
+   主题类由插件挂在 body 上（见 main.ts 的 applyUiTheme），
+   这样挂在 body 下的浮层（回到顶部、撤回提示条）也能一起跟随。 */
+body[class*="moment-ui-theme-"] {
+	/* 由主题色派生强调文字色与渐变：浅色主题下偏深、深色主题下偏亮，自动保住对比度 */
+	--moment-accent-2: color-mix(in srgb, var(--moment-accent) 78%, var(--text-normal));
+	--moment-accent-grad: linear-gradient(135deg,
+		color-mix(in srgb, var(--moment-accent) 72%, var(--text-normal)),
+		var(--moment-accent));
+}
+body.moment-ui-theme-sky { --moment-accent: #3f86c9; }       /* 晴空蓝 */
+body.moment-ui-theme-matcha { --moment-accent: #3f9e6a; }    /* 抹茶绿 */
+body.moment-ui-theme-ocean { --moment-accent: #1f8f9e; }     /* 深海青 */
+body.moment-ui-theme-amber { --moment-accent: #c08a1e; }     /* 琥珀金 */
+body.moment-ui-theme-peach { --moment-accent: #dd7f45; }     /* 蜜桃橘 */
+body.moment-ui-theme-rose { --moment-accent: #d1567b; }      /* 玫瑰粉 */
+body.moment-ui-theme-graphite { --moment-accent: #6b7280; }  /* 石墨灰 */
+
 /* ============ 视图容器 ============ */
 .moment-view {
 	display: flex;
@@ -34,7 +54,7 @@ body {
 	height: 100%;
 	background:
 		radial-gradient(120% 120% at 100% 0%,
-			color-mix(in srgb, var(--interactive-accent) 7%, transparent), transparent 55%),
+			color-mix(in srgb, var(--moment-accent) 7%, transparent), transparent 55%),
 		var(--moment-bg);
 	color: var(--moment-fore);
 	overflow-y: auto;          /* 整页滚动（含下方日常信息流） */
@@ -79,8 +99,8 @@ body {
 	/* 无背景图时的兜底：用主题色在底色上铺一层柔和斜向渐变 */
 	background:
 		linear-gradient(120deg,
-			color-mix(in srgb, var(--interactive-accent) 60%, var(--background-primary)),
-			color-mix(in srgb, var(--interactive-accent) 30%, var(--background-primary)));
+			color-mix(in srgb, var(--moment-accent) 60%, var(--background-primary)),
+			color-mix(in srgb, var(--moment-accent) 30%, var(--background-primary)));
 }
 /* 悬停展开背景整图（高度由 JS 按图片比例撑满；此值为未计算完成时的兜底）。
    仅在有鼠标的设备上触发；触摸端禁用伪 hover，避免展开后遮住右上角「＋」无法点按 */
@@ -115,8 +135,8 @@ body {
 	inset: 0;
 	z-index: 0;
 	background: linear-gradient(120deg,
-		color-mix(in srgb, var(--interactive-accent) 60%, var(--background-primary)),
-		color-mix(in srgb, var(--interactive-accent) 30%, var(--background-primary)));
+		color-mix(in srgb, var(--moment-accent) 60%, var(--background-primary)),
+		color-mix(in srgb, var(--moment-accent) 30%, var(--background-primary)));
 }
 
 /* 签名 */
@@ -223,7 +243,7 @@ body {
 	bottom: 0;
 	z-index: 4;                    /* 高于封面图片与其暗角 */
 	overflow: visible;             /* 让模糊背景层可向上溢出，实现“去边缘” */
-	padding: 42px 16px 36px;       /* 顶部留白用于“由透明→模糊”的渐变过渡；底部为条下方气泡留位 */
+	padding: 42px 16px 14px;       /* 顶部留白用于“由透明→模糊”的渐变过渡 */
 	display: flex;
 	flex-direction: column;
 	gap: 6px;
@@ -298,6 +318,7 @@ body {
 	font-weight: 600;
 	color: rgba(255, 255, 255, 0.9);
 	text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+	transition: opacity 0.15s ease;
 }
 
 /* 心情占比：单长条，按心情颜色分段 */
@@ -347,11 +368,6 @@ body {
 	font-size: 0.64rem;
 	color: rgba(255, 255, 255, 0.85);
 	text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
-	transition: opacity 0.15s ease;
-}
-/* 悬停心情条时气泡会落在同一位置，先把状态行淡出，避免两层文字重叠 */
-.moment-stats-segbar:hover ~ .moment-stats-filter {
-	opacity: 0;
 }
 .moment-stats-filter .txt {
 	overflow: hidden;
@@ -394,6 +410,11 @@ body {
 }
 .moment-stats-pop.show {
 	opacity: 1;
+}
+/* 气泡悬浮在心情条正上方，会盖住「心情占比」标题行；悬停条子时把标题淡出，
+   避免两层文字叠在一起（:has 不受支持时退化为直接覆盖，不影响功能） */
+.moment-stats:has(.moment-stats-segbar:hover) .moment-stats-share {
+	opacity: 0;
 }
 .moment-stats-empty {
 	font-size: 0.66rem;
@@ -442,29 +463,20 @@ body {
 	border-radius: 2px;       /* 用户调参：圆角 2 */
 	/* 空格：主题色淡淡铺一层（不支持 color-mix 的内核回落到主题 hover 底色） */
 	background: var(--background-modifier-hover);
-	background: color-mix(in srgb, var(--interactive-accent) 10%, transparent);
+	background: color-mix(in srgb, var(--moment-accent) 10%, transparent);
 	transition: transform 0.12s ease;
 	min-width: 0;
 	position: relative;
 }
 .moment-cell:hover { transform: scale(1.08); z-index: 2; }
-/* 今日标记：主题色实心 + 对色描边 + 同色光晕，与深浅动态格都区分得开 */
+/* 今日：底色与其它格子完全一致（沿用当天活跃度的深浅），
+   只用底层一层主题色光晕标注「今天」——不再实心填充 + 白圈 + 白色径向高光 */
 .moment-cell.today {
-	background: var(--interactive-accent) !important;
-	box-shadow: 0 0 0 2px var(--text-on-accent), 0 0 12px rgba(0, 0, 0, 0.25);
-	box-shadow: 0 0 0 2px color-mix(in srgb, var(--text-on-accent) 92%, transparent),
-		0 0 12px color-mix(in srgb, var(--interactive-accent) 55%, transparent);
-	position: relative;
-	z-index: 1;
-}
-.moment-cell.today::before {
-	content: "";
-	position: absolute;
-	inset: 0;
-	border-radius: inherit;
-	background: radial-gradient(circle at 50% 45%,
-		rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0) 55%);
-	pointer-events: none;
+	z-index: 1;                     /* 让光晕盖过相邻格子，悬停时仍为 2 */
+	/* 不支持 color-mix 的内核：用实色光晕兜底 */
+	box-shadow: 0 0 8px 2px var(--moment-accent);
+	box-shadow: 0 0 5px 1px color-mix(in srgb, var(--moment-accent) 70%, transparent),
+		0 0 14px 4px color-mix(in srgb, var(--moment-accent) 32%, transparent);
 }
 /* 悬停提示气泡：日期 · 条数 */
 .moment-cell::after {
@@ -493,11 +505,11 @@ body {
 	transform: translateX(-50%) translateY(0);
 }
 /* 活跃度梯度：主题色由淡到浓（α 0.16 → 0.9），不绑定具体色相 */
-.moment-cell.l1 { background: color-mix(in srgb, var(--interactive-accent) 16%, transparent); }
-.moment-cell.l2 { background: color-mix(in srgb, var(--interactive-accent) 34%, transparent); }
-.moment-cell.l3 { background: color-mix(in srgb, var(--interactive-accent) 52%, transparent); }
-.moment-cell.l4 { background: color-mix(in srgb, var(--interactive-accent) 70%, transparent); }
-.moment-cell.l5 { background: color-mix(in srgb, var(--interactive-accent) 90%, transparent); }
+.moment-cell.l1 { background: color-mix(in srgb, var(--moment-accent) 16%, transparent); }
+.moment-cell.l2 { background: color-mix(in srgb, var(--moment-accent) 34%, transparent); }
+.moment-cell.l3 { background: color-mix(in srgb, var(--moment-accent) 52%, transparent); }
+.moment-cell.l4 { background: color-mix(in srgb, var(--moment-accent) 70%, transparent); }
+.moment-cell.l5 { background: color-mix(in srgb, var(--moment-accent) 90%, transparent); }
 
 /* ============ 灰分界线 + 名言 ============ */
 .moment-split {
@@ -652,7 +664,7 @@ body {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	box-shadow: 0 3px 10px color-mix(in srgb, var(--interactive-accent) 38%, transparent);
+	box-shadow: 0 3px 10px color-mix(in srgb, var(--moment-accent) 38%, transparent);
 }
 .moment-body {
 	flex: 1;
@@ -701,7 +713,7 @@ body {
 	padding: 1px 9px;
 	border-radius: 12px;
 	background: var(--background-modifier-hover);
-	background: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+	background: color-mix(in srgb, var(--moment-accent) 14%, transparent);
 	color: var(--text-accent);
 }
 .moment-post-text {
@@ -870,7 +882,7 @@ body {
 		box-shadow 0.22s ease, background 0.22s ease;
 }
 .moment-to-top:hover {
-	background: var(--interactive-accent);
+	background: var(--moment-accent);
 	color: var(--text-on-accent);
 	box-shadow: 0 8px 24px var(--background-modifier-box-shadow);
 }
@@ -947,7 +959,7 @@ body.is-mobile .moment-to-top {
 }
 .moment-publish-card.dragging {
 	border: 2px dashed var(--moment-accent);
-	box-shadow: 0 0 0 4px color-mix(in srgb, var(--interactive-accent) 20%, transparent);
+	box-shadow: 0 0 0 4px color-mix(in srgb, var(--moment-accent) 20%, transparent);
 }
 .moment-publish-head {
 	position: relative;
@@ -1063,7 +1075,7 @@ body.is-mobile .moment-to-top {
 	font-weight: 600;
 	cursor: pointer;
 	font-size: 0.85rem;
-	box-shadow: 0 4px 14px color-mix(in srgb, var(--interactive-accent) 40%, transparent);
+	box-shadow: 0 4px 14px color-mix(in srgb, var(--moment-accent) 40%, transparent);
 	transition: transform 0.12s ease;
 }
 .moment-publish-send:hover { transform: translateY(-1px); }
@@ -1188,8 +1200,8 @@ body.is-mobile .moment-to-top {
 	border-radius: 7px;
 	background: var(--background-modifier-hover);
 	background: linear-gradient(135deg,
-		color-mix(in srgb, var(--interactive-accent) 26%, transparent),
-		color-mix(in srgb, var(--interactive-accent) 12%, transparent));
+		color-mix(in srgb, var(--moment-accent) 26%, transparent),
+		color-mix(in srgb, var(--moment-accent) 12%, transparent));
 	overflow: hidden;
 	min-height: 30px;
 }
@@ -1224,7 +1236,7 @@ body.is-mobile .moment-to-top {
 	color: var(--text-normal);
 }
 .moment-overview .moment-ov-seg-item.active {
-	background: var(--interactive-accent);
+	background: var(--moment-accent);
 	color: var(--text-on-accent);
 }
 
@@ -1280,8 +1292,8 @@ body.is-mobile .moment-to-top {
 .moment-view.moment-style-flat .moment-ov-thumb {
 	background: var(--background-modifier-hover);
 	background: linear-gradient(135deg,
-		color-mix(in srgb, var(--interactive-accent) 16%, transparent),
-		color-mix(in srgb, var(--interactive-accent) 8%, transparent));
+		color-mix(in srgb, var(--moment-accent) 16%, transparent),
+		color-mix(in srgb, var(--moment-accent) 8%, transparent));
 	border-radius: 5px;
 }
 .moment-view.moment-style-flat .moment-feed-head {

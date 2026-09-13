@@ -28,29 +28,31 @@ const ACTIVITY_COLS = 7; // 7 列 = 一星期（周一~周日）
 const CELL_H = 40;        // 格高 px
 const CELL_GAP = 1;       // 间距 px
 const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
-// 心情占比条配色：主题色打头，其余取 Obsidian 主题自带的语义色，
-// 随主题明暗与主题色自动适配（括号内为兜底色，仅在主题未定义该变量时生效）
-const MOOD_PALETTE = [
-	"var(--interactive-accent, #5b8def)",
-	"var(--color-cyan, #17b8c4)",
-	"var(--color-green, #3fae6a)",
-	"var(--color-yellow, #d8a92a)",
-	"var(--color-orange, #e08a3c)",
-	"var(--color-red, #d95c5c)",
-	"var(--color-blue, #4d7fd6)",
-	"var(--color-purple, #8c6fd0)",
-];
+// 心情占比条的彩虹色谱：左端红 → 右端品红（不闭环，避免首尾撞色）
+const MOOD_HUE_START = 0;
+const MOOD_HUE_END = 300;
+
+/**
+ * 取下标对应的彩虹色：在色谱上等距取样，从左往右依次铺开。
+ * 段数多于或少于 7 段时同样按比例取样（即取到色谱中的中间色）；
+ * 只有一段时取色谱正中的颜色。
+ */
+function moodColor(index: number, total: number): string {
+	const t = total <= 1 ? 0.5 : index / (total - 1);
+	const hue = Math.round(MOOD_HUE_START + t * (MOOD_HUE_END - MOOD_HUE_START));
+	return `hsl(${hue} 66% 56%)`;
+}
 
 // 心情下拉里“新建心情”哨兵值
 const NEW_MOOD = "__new_mood__";
 
 // 封面未指定颜色时的兜底：由主题色与底色混出一层柔和底色（设置留空 = 跟随主题色）
 const COVER_TINT =
-	"color-mix(in srgb, var(--interactive-accent) 45%, var(--background-primary))";
+	"color-mix(in srgb, var(--moment-accent) 45%, var(--background-primary))";
 const COVER_TINT_LIGHT =
-	"color-mix(in srgb, var(--interactive-accent) 60%, var(--background-primary))";
+	"color-mix(in srgb, var(--moment-accent) 60%, var(--background-primary))";
 const COVER_TINT_DARK =
-	"color-mix(in srgb, var(--interactive-accent) 25%, var(--background-primary))";
+	"color-mix(in srgb, var(--moment-accent) 25%, var(--background-primary))";
 
 /** 信息流单次加载 / 渲染的天数（按已有的日文件）；触底后再拉取下一批 */
 const FEED_BATCH = 30;
@@ -96,14 +98,14 @@ function feedKey(d: Date): string {
 	return `${p.year}-${p.month}-${p.day}`;
 }
 
-/** 把占比气泡定位到某段的正下方（含 bar 在统计层内的偏移，避免被遮罩干扰） */
+/** 把占比气泡定位到某段的正上方（纯浮层，不参与布局，因此无需预留空间） */
 function placePop(pop: HTMLElement, seg: HTMLElement, bar: HTMLElement) {
 	const bw = bar.clientWidth || 100;
 	const left0 = bar.offsetLeft || 0;
 	const cx = left0 + seg.offsetLeft + seg.clientWidth / 2;
 	pop.style.left = `${Math.max(left0 + 8, Math.min(left0 + bw - 8, cx))}px`;
-	// 竖向锚在心情条下沿，紧贴条子显示
-	pop.style.top = `${bar.offsetTop + bar.offsetHeight + 6}px`;
+	// 竖向锚在心情条上沿：量出气泡自身高度后整体上移，悬浮在条子之上
+	pop.style.top = `${bar.offsetTop - (pop.offsetHeight || 22) - 6}px`;
 	pop.style.transform = "translateX(-50%)";
 }
 
@@ -539,7 +541,7 @@ export class MomentView extends ItemView {
 				});
 				seg.dataset.mood = name;
 				seg.style.width = `${pct}%`;
-				seg.style.background = MOOD_PALETTE[idx % MOOD_PALETTE.length];
+				seg.style.background = moodColor(idx, list.length);
 				seg.title = `${name} / ${pct.toFixed(1)}% / ${n}次`;
 				seg.addEventListener("mouseenter", () => {
 					pop.textContent = `${name} · ${pct.toFixed(1)}% · ${n}次`;

@@ -5,11 +5,15 @@ import { MomentView } from "./view";
 
 const HEARTBEAT_MS = 30_000;
 
+/** 内置界面主题的 body class 前缀（styles.css: body.moment-ui-theme-<id>） */
+const UI_THEME_CLASS_PREFIX = "moment-ui-theme-";
+
 export default class MomentPlugin extends Plugin {
 	settings!: MomentSettings;
 
 	async onload() {
 		await this.loadSettings();
+		this.applyUiTheme();
 		this.addSettingTab(new MomentSettingTab(this.app, this));
 
 		// 注册视图
@@ -75,7 +79,27 @@ export default class MomentPlugin extends Plugin {
 		}
 	}
 
-	onunload() {}
+	onunload() {
+		// 撤下挂在 body 上的主题类，避免卸载后残留影响其它插件
+		const cls = document.body.classList;
+		for (const name of Array.from(cls)) {
+			if (name.startsWith(UI_THEME_CLASS_PREFIX)) cls.remove(name);
+		}
+	}
+
+	/**
+	 * 应用界面主题。挂在 body 上而非视图容器上：
+	 * 回到顶部按钮、撤回提示条是 append 到 body 的，只有 body 级变量才能覆盖到它们。
+	 * auto 表示不覆盖，直接跟随 Obsidian 主题与主题色。
+	 */
+	applyUiTheme() {
+		const cls = document.body.classList;
+		for (const name of Array.from(cls)) {
+			if (name.startsWith(UI_THEME_CLASS_PREFIX)) cls.remove(name);
+		}
+		const theme = this.settings.uiTheme || "auto";
+		if (theme !== "auto") cls.add(UI_THEME_CLASS_PREFIX + theme);
+	}
 
 	/** 打开或聚焦视图（中间主区域标签页） */
 	async activateView() {

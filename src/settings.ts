@@ -19,6 +19,8 @@ export interface MomentSettings {
 	quotes: string[];
 	/** 界面样式：卡片式 / 平面式 */
 	styleMode: "card" | "flat";
+	/** 界面配色主题：auto = 跟随 Obsidian 主题与主题色；其余为内置预设 id */
+	uiTheme: string;
 	/** 动态图片排列：九宫格 / 卡片堆叠 */
 	imageMode: "grid" | "stack";
 	/** 背景文件名识别名（附件目录内的这张图即朋友圈背景） */
@@ -46,6 +48,7 @@ export const DEFAULT_SETTINGS: MomentSettings = {
 	signature: "把日子过成想要的样子",
 	quotes: [...DEFAULT_QUOTES],
 	styleMode: "card",
+	uiTheme: "auto",
 	imageMode: "grid",
 	coverName: "img.jpg",
 	coverMode: "file",
@@ -58,6 +61,22 @@ export const DEFAULT_SETTINGS: MomentSettings = {
 	coverAlign: 3,
 	moods: [...DEFAULT_MOODS],
 };
+
+/**
+ * 内置界面主题。auto 不覆盖任何变量，直接跟随 Obsidian 的主题与主题色；
+ * 其余预设只替换插件的主题色一族，明暗仍由 Obsidian 主题决定
+ * （对应 styles.css 里的 body.moment-ui-theme-<id> 规则）。
+ */
+export const UI_THEMES: { id: string; label: string }[] = [
+	{ id: "auto", label: "跟随 Obsidian 主题" },
+	{ id: "sky", label: "晴空蓝" },
+	{ id: "matcha", label: "抹茶绿" },
+	{ id: "ocean", label: "深海青" },
+	{ id: "amber", label: "琥珀金" },
+	{ id: "peach", label: "蜜桃橘" },
+	{ id: "rose", label: "玫瑰粉" },
+	{ id: "graphite", label: "石墨灰" },
+];
 
 /** 生成日期对应路径的工具 */
 export function dateParts(d: Date) {
@@ -92,6 +111,23 @@ export default class MomentSettingTab extends PluginSettingTab {
 			text: "朋友圈式日记。内容以标准 markdown 存于本地，任何编辑器都可读取。",
 			attr: { class: "moment-settings-hint" },
 		});
+
+		// 界面主题（配色）
+		new Setting(containerEl)
+			.setName("界面主题")
+			.setDesc(
+				"内置配色方案。默认跟随 Obsidian 的主题与主题色；选择预设后只替换插件的主题色一族，" +
+					"浅色 / 深色仍由 Obsidian 主题决定。"
+			)
+			.addDropdown((dd) => {
+				for (const t of UI_THEMES) dd.addOption(t.id, t.label);
+				dd.setValue(this.plugin.settings.uiTheme || "auto");
+				dd.onChange(async (v) => {
+					this.plugin.settings.uiTheme = v;
+					await this.plugin.saveSettings();
+					this.plugin.applyUiTheme();
+				});
+			});
 
 		// 界面样式
 		new Setting(containerEl)
@@ -440,6 +476,7 @@ export default class MomentSettingTab extends PluginSettingTab {
 							moods: [...DEFAULT_SETTINGS.moods],
 						};
 						await this.plugin.saveSettings();
+						this.plugin.applyUiTheme();
 						this.display();
 						new Notice("已恢复默认设置");
 						})
