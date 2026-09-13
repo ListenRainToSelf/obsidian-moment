@@ -1,4 +1,4 @@
-import { App, TFile, normalizePath, Notice } from "obsidian";
+import { App, TFile, normalizePath } from "obsidian";
 import type { MomentSettings } from "./settings";
 import type { MomentDay, MomentMessage } from "./types";
 import {
@@ -150,7 +150,34 @@ export async function readDayContent(
 	return null;
 }
 
+/** 单日解析结果缓存项；mtime 用于判断磁盘内容是否已变 */
+interface DayCacheEntry {
+	day: MomentDay;
+	mtime: number;
+}
+
+/** 把一天文件的原始文本解析为结构体 */
+function parseDay(content: string, dateKey: string): MomentDay {
+	const { fm, body } = splitFrontmatter(content);
+	const messages = parseMessages(body);
+	return {
+		date: dateKey,
+		moods: fm.mood || [],
+		quote: fm.quote || undefined,
+		messages,
+		thumbs: collectThumbs(messages),
+	};
+}
+
 export class DayFileStore {
+	/** 解析结果缓存：path → { day, mtime }，内容未变时免读盘、免解析 */
+	private dayCache = new Map<string, DayCacheEntry>();
+	/** 并发去重：同一次刷新里多个模块读同一天时共用同一个 Promise */
+	private inflight = new Map<string, Promise<MomentDay | null>>();
+	/** 日文件列表缓存（扫描全库是 O(库文件数)，用短 TTL 抑制刷新风暴） */
+	private dayListCache: { at: number; list: Date[] } | null = null;
+	private static readonly DAY_LIST_TTL = 1500;
+
 	constructor(private app: App, private settings: MomentSettings) {}
 
 	/** 某天文件是否存在 */
@@ -159,12 +186,31 @@ export class DayFileStore {
 		return !!this.app.vault.getAbstractFileByPath(path);
 	}
 
+	/** 使日文件列表缓存失效（库内新增 / 删除文件时调用） */
+	invalidateDayList() {
+		this.dayListCache = null;
+	}
+
+	/** 带短 TTL 缓存的日文件列表；写入路径变化由 invalidateDayList 兜底 */
+	listDayDates(): Date[] {
+		const now = Date.now();
+		if (
+			this.dayListCache &&
+			now - this.dayListCache.at < DayFileStore.DAY_LIST_TTL
+		) {
+			return this.dayListCache.list;
+		}
+		const list = this.scanDayDates();
+		this.dayListCache = { at: now, list };
+		return list;
+	}
+
 	/**
 	 * 枚举库内真实存在的「日文件」日期，按时间倒序（新 → 旧）。
 	 * 仅收录符合 `<根>/<年-月>/<年-月-日>.md` 结构的文件，并校验年月一致。
 	 * 信息流据此分页：只翻真实存在的天，既不会乱序，也不会在空天上无限空转。
 	 */
-	listDayDates(): Date[] {
+	private scanDayDates(): Date[] {
 		const root = bodyRoot(this.settings);
 		const prefix = root ? root + "/" : "";
 		const out: Date[] = [];
@@ -193,22 +239,53 @@ export class DayFileStore {
 	}
 
 	/** 读取某天；不存在或解析失败返回 null。
-	 *  fresh=true 时强制读磁盘（绕过 Obsidian 缓存），用于轮询兜底库外改动。 */
+	 *  fresh=true 时强制校验磁盘 mtime（绕过 Obsidian 缓存），用于轮询兜底库外改动。 */
 	async readDay(date: Date, fresh = false): Promise<MomentDay | null> {
-		const p = dateParts(date);
 		const path = dailyPath(this.settings, date);
+		const key = `${path}\u0000${fresh ? 1 : 0}`;
+		const pending = this.inflight.get(key);
+		if (pending) return pending;
+		const job = this.loadDay(path, dateParts(date).dateKey, fresh);
+		this.inflight.set(key, job);
+		try {
+			return await job;
+		} finally {
+			this.inflight.delete(key);
+		}
+	}
+
+	/** 单日读取主体：先比 mtime，内容未变直接复用解析结果 */
+	private async loadDay(
+		path: string,
+		dateKey: string,
+		fresh: boolean
+	): Promise<MomentDay | null> {
+		const mtime = await this.mtimeOf(path, fresh);
+		const cached = this.dayCache.get(path);
+		if (cached && mtime >= 0 && cached.mtime === mtime) return cached.day;
+
 		const content = await readDayContent(this.app, path, fresh);
-		if (content == null) return null;
-		const { fm, body } = splitFrontmatter(content);
-		const messages = parseMessages(body);
-		const thumbs = collectThumbs(messages);
-		return {
-			date: p.dateKey,
-			moods: fm.mood || [],
-			quote: fm.quote || undefined,
-			messages,
-			thumbs,
-		};
+		if (content == null) {
+			this.dayCache.delete(path);
+			return null;
+		}
+		const day = parseDay(content, dateKey);
+		this.dayCache.set(path, { day, mtime });
+		return day;
+	}
+
+	/** 取文件修改时间：fresh 走磁盘 stat，否则用已索引 TFile 的 stat */
+	private async mtimeOf(path: string, fresh: boolean): Promise<number> {
+		if (!fresh) {
+			const f = this.app.vault.getAbstractFileByPath(path);
+			if (f instanceof TFile) return f.stat.mtime;
+		}
+		try {
+			const st = await this.app.vault.adapter.stat(path);
+			return st ? st.mtime : -1;
+		} catch {
+			return -1;
+		}
 	}
 
 	/** 追加一条动态到今天（不存在则创建） */
@@ -237,6 +314,7 @@ export class DayFileStore {
 			: upd.replace(/\s*$/, "\n\n");
 		const next = appended + renderMessage(this.settings, date, msg);
 		await this.app.vault.modify(file as TFile, next);
+		this.dayCache.delete(path);
 		return { path };
 	}
 
@@ -261,6 +339,7 @@ export class DayFileStore {
 		}
 		if (!removed) return false;
 		await this.app.vault.modify(file, kept.join("\n## "));
+		this.dayCache.delete(path);
 		return true;
 	}
 
@@ -426,9 +505,4 @@ export function updateFrontmatterTime(content: string, iso: string): string {
 			.join("\n");
 	}
 	return content;
-}
-
-/** 安全包装 notice */
-export function momentNotice(msg: string, timeout?: number) {
-	new Notice(msg, timeout);
 }

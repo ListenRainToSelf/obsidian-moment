@@ -20,7 +20,7 @@ import { DayFileStore } from "./dayFile";
 import { CoverLoader } from "./cover";
 import { ActivityGrid } from "./activityGrid";
 import { OverviewBuilder, OverviewUnit } from "./overview";
-import { attachmentPath, coverPath, attachmentRoot } from "./paths";
+import { attachmentPath, attachmentRoot } from "./paths";
 import { dateParts } from "./settings";
 
 const ACTIVITY_COLS = 7; // 7 列 = 一星期（周一~周日）
@@ -28,14 +28,29 @@ const ACTIVITY_COLS = 7; // 7 列 = 一星期（周一~周日）
 const CELL_H = 40;        // 格高 px
 const CELL_GAP = 1;       // 间距 px
 const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
-// 心情占比条配色（循环取用）
+// 心情占比条配色：主题色打头，其余取 Obsidian 主题自带的语义色，
+// 随主题明暗与主题色自动适配（括号内为兜底色，仅在主题未定义该变量时生效）
 const MOOD_PALETTE = [
-	"#5aa7d6", "#7a6bb8", "#e9a86b", "#66b8a0",
-	"#e07878", "#4f9bcf", "#b98fd6", "#d6a35a",
+	"var(--interactive-accent, #5b8def)",
+	"var(--color-cyan, #17b8c4)",
+	"var(--color-green, #3fae6a)",
+	"var(--color-yellow, #d8a92a)",
+	"var(--color-orange, #e08a3c)",
+	"var(--color-red, #d95c5c)",
+	"var(--color-blue, #4d7fd6)",
+	"var(--color-purple, #8c6fd0)",
 ];
 
 // 心情下拉里“新建心情”哨兵值
 const NEW_MOOD = "__new_mood__";
+
+// 封面未指定颜色时的兜底：由主题色与底色混出一层柔和底色（设置留空 = 跟随主题色）
+const COVER_TINT =
+	"color-mix(in srgb, var(--interactive-accent) 45%, var(--background-primary))";
+const COVER_TINT_LIGHT =
+	"color-mix(in srgb, var(--interactive-accent) 60%, var(--background-primary))";
+const COVER_TINT_DARK =
+	"color-mix(in srgb, var(--interactive-accent) 25%, var(--background-primary))";
 
 /** 信息流单次加载 / 渲染的天数（按已有的日文件）；触底后再拉取下一批 */
 const FEED_BATCH = 30;
@@ -53,15 +68,26 @@ interface FeedGroupEntry {
 	sig: string; // 内容签名，用于高度缓存命中判断
 }
 
-/** 内容签名：条数 + 文本总长 + 图片总数，用于判断高度缓存是否仍可用 */
+/** 内容签名：对条目的时间 / 心情 / 正文 / 图片做散列，任何改动都会变号，
+ *  据此判断高度缓存与已渲染 DOM 是否仍然可用 */
 function feedSig(msgs: MomentMessage[]): string {
-	let len = 0;
-	let imgs = 0;
+	let h = 5381;
 	for (const m of msgs) {
-		len += m.text ? m.text.length : 0;
-		imgs += m.images.length;
+		const s = `${m.time}\u0001${m.mood || ""}\u0001${m.text}\u0001${m.images.join("\u0000")}\u0002`;
+		for (let i = 0; i < s.length; i++) {
+			h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+		}
 	}
-	return `${msgs.length}:${len}:${imgs}`;
+	return `${msgs.length}:${h.toString(36)}`;
+}
+
+/** 字符串 → 32 位散列（用于把「当天」稳定映射到名言池的一项） */
+function hashStr(s: string): number {
+	let h = 5381;
+	for (let i = 0; i < s.length; i++) {
+		h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+	}
+	return h;
 }
 
 /** 高度缓存键：按年月日唯一标识一天 */
@@ -70,12 +96,14 @@ function feedKey(d: Date): string {
 	return `${p.year}-${p.month}-${p.day}`;
 }
 
-/** 把占比气泡定位到某段的正上方（含 bar 在统计层内的左偏移，避免被遮罩干扰） */
+/** 把占比气泡定位到某段的正下方（含 bar 在统计层内的偏移，避免被遮罩干扰） */
 function placePop(pop: HTMLElement, seg: HTMLElement, bar: HTMLElement) {
 	const bw = bar.clientWidth || 100;
 	const left0 = bar.offsetLeft || 0;
 	const cx = left0 + seg.offsetLeft + seg.clientWidth / 2;
 	pop.style.left = `${Math.max(left0 + 8, Math.min(left0 + bw - 8, cx))}px`;
+	// 竖向锚在心情条下沿，紧贴条子显示
+	pop.style.top = `${bar.offsetTop + bar.offsetHeight + 6}px`;
 	pop.style.transform = "translateX(-50%)";
 }
 
@@ -103,8 +131,11 @@ export class MomentView extends ItemView {
 	private closeOvEl!: HTMLElement;
 	private ovScrollEl!: HTMLElement;
 	private ovLabelEl!: HTMLElement;
+	// 全览聚合档位
 	private segEls: Map<string, HTMLElement> = new Map();
 	private aggr: AggregationLevel = "day";
+	/** 全览渲染代号：切换档位时自增，丢弃过期的异步结果 */
+	private overviewGen = 0;
 
 	// 下拉
 	private pullStartY = 0;
@@ -115,6 +146,20 @@ export class MomentView extends ItemView {
 	// 撤回后暂存，用于「重新编辑」
 	private retracted: { date: Date; msg: MomentMessage } | null = null;
 	private undoEl: HTMLElement | null = null;
+	/** 当前打开的图片灯箱（挂在 body 上，随视图关闭一并清理） */
+	private lightboxEl: HTMLElement | null = null;
+	private lightboxClose: (() => void) | null = null;
+
+	/** 心情筛选：选中的心情集合；空集合 = 未筛选，信息流与统计条均为原始形态 */
+	private moodFilter = new Set<string>();
+	/** 统计层已渲染内容的签名，避免高频刷新时重建 DOM 打断点击 / 悬停 */
+	private moodStatsSig = "";
+	private moodStatsDataSig = "";
+	private moodStatsFullSig(): string {
+		return `${this.moodStatsDataSig}|${[...this.moodFilter].join(",")}`;
+	}
+	/** 信息流筛选提示条已渲染内容的签名 */
+	private feedFilterSig = "";
 
 	// 信息流懒加载
 	private feedDates: Date[] = []; // 已存在「日文件」的日期队列（新 → 旧）
@@ -133,7 +178,7 @@ export class MomentView extends ItemView {
 		this.plugin = plugin;
 		this.store = new DayFileStore(plugin.app, plugin.settings);
 		this.cover = new CoverLoader(plugin.app, plugin.settings);
-		this.overview = new OverviewBuilder(plugin.app, plugin.settings);
+		this.overview = new OverviewBuilder(this.store);
 	}
 
 	getViewType(): string {
@@ -162,6 +207,11 @@ export class MomentView extends ItemView {
 		this.toTopEl?.remove();
 		this.undoEl?.remove();
 		this.coverEl?.remove();
+		// 灯箱挂在 body 上，视图关闭时需手动清理，否则会残留在整页之上
+		this.lightboxClose?.();
+		this.lightboxEl?.remove();
+		this.lightboxEl = null;
+		this.lightboxClose = null;
 	}
 
 	/* ---------- 布局 ---------- */
@@ -246,11 +296,7 @@ export class MomentView extends ItemView {
 	}
 
 	private onPageScroll = () => {
-		const show =
-			!this.inOverview &&
-			(this.contentEl.scrollTop || this.contentEl.scrollTop === 0
-				? this.contentEl.scrollTop > 160
-				: false);
+		const show = !this.inOverview && this.contentEl.scrollTop > 160;
 		this.toTopEl?.classList.toggle("show", show);
 		if (this.inOverview) return;
 		// 滚动接近底部时，拉取并渲染下一批动态
@@ -281,12 +327,22 @@ export class MomentView extends ItemView {
 		const host = this.contentEl.getBoundingClientRect();
 		const topEdge = host.top - FEED_RETAIN_ABOVE;
 		const botEdge = host.bottom + FEED_RETAIN_BELOW;
-		// 第一遍只读：采集各分组当前位置，避免「读-写」交错触发反复回流
+		// 第一遍只读：采集各分组当前位置，避免「读-写」交错触发反复回流。
+		// 分组按日期倒序在文档中自上而下排列，位置单调：一旦某组顶边已落到
+		// 保留区下方，其后所有分组都在下方，无需再逐个测量。
 		const mounts: FeedGroupEntry[] = [];
 		const unmounts: FeedGroupEntry[] = [];
-		for (const g of this.feedGroups) {
+		for (let i = 0; i < this.feedGroups.length; i++) {
+			const g = this.feedGroups[i];
 			const r = g.el.getBoundingClientRect();
-			const inWindow = r.bottom > topEdge && r.top < botEdge;
+			if (r.top >= botEdge) {
+				for (let j = i; j < this.feedGroups.length; j++) {
+					const rest = this.feedGroups[j];
+					if (rest.rendered) unmounts.push(rest);
+				}
+				break;
+			}
+			const inWindow = r.bottom > topEdge;
 			if (inWindow && !g.rendered) mounts.push(g);
 			else if (!inWindow && g.rendered) unmounts.push(g);
 		}
@@ -374,7 +430,12 @@ export class MomentView extends ItemView {
 	/** 背景文件名改动：清空缓存并重绘封面 */
 	reloadCoverPublic() {
 		this.cover.invalidate();
+		this.coverSizeSrc = ""; // 背景可能换了图，重新量一次比例
 		this.renderCover();
+	}
+	/** 库内新增 / 删除文件：让日文件列表缓存立即失效，新的一天当次刷新即可见 */
+	invalidateDayList() {
+		this.store.invalidateDayList();
 	}
 	openPublishForCommand() {
 		this.openPublish();
@@ -406,13 +467,21 @@ export class MomentView extends ItemView {
 		const moodCounts = new Map<string, number>();
 		const dayCounts = new Map<string, number>(); // dateKey -> 条数
 		let total = 0;
+		// 并行取数：这 30 天与信息流 / 活跃度高度重叠，交给 store 去重后
+		// 实际只读一轮，串行等待没有意义。
+		const keys: string[] = [];
+		const jobs: Promise<MomentDay | null>[] = [];
 		for (let i = 0; i < range; i++) {
 			const d = new Date(today);
 			d.setDate(today.getDate() - i);
-			const day = await this.store.readDay(d, fresh);
+			keys.push(dateParts(d).dateKey);
+			jobs.push(this.store.readDay(d, fresh));
+		}
+		const days = await Promise.all(jobs);
+		for (let i = 0; i < days.length; i++) {
+			const day = days[i];
 			if (!day || !day.messages.length) continue;
-			const key = dateParts(d).dateKey;
-			dayCounts.set(key, day.messages.length);
+			dayCounts.set(keys[i], day.messages.length);
 			total += day.messages.length;
 			for (const msg of day.messages) {
 				if (msg.mood && msg.mood.trim()) {
@@ -436,6 +505,14 @@ export class MomentView extends ItemView {
 		const moodTotal = [...moodCounts.values()].reduce((a, b) => a + b, 0);
 		const list = [...moodCounts.entries()].sort((a, b) => b[1] - a[1]);
 
+		// 内容与筛选态都没变时跳过重建：刷新很频繁，重建会把鼠标正按着的
+		// 色块换掉，导致点击 / 悬停丢失。
+		this.moodStatsDataSig = `${streak}|${total}|${todayCount}|${list
+			.map(([n, c]) => `${n}:${c}`)
+			.join(",")}`;
+		if (this.moodStatsFullSig() === this.moodStatsSig) return;
+		this.moodStatsSig = this.moodStatsFullSig();
+
 		this.statsEl.empty();
 		this.statsEl.createDiv({ cls: "moment-stats-bg" }); // 首层：去边缘高斯模糊，内容叠于其上
 
@@ -449,11 +526,18 @@ export class MomentView extends ItemView {
 		this.statsEl.createDiv({ cls: "moment-stats-share", text: "心情占比" });
 
 		if (moodTotal > 0 && list.length) {
-			const bar = this.statsEl.createDiv({ cls: "moment-stats-segbar" });
+			const filtering = this.moodFilter.size > 0;
+			const bar = this.statsEl.createDiv({
+				cls: "moment-stats-segbar" + (filtering ? " filtering" : ""),
+			});
 			const pop = this.statsEl.createDiv({ cls: "moment-stats-pop" });
 			list.forEach(([name, n], idx) => {
 				const pct = (n / moodTotal) * 100;
-				const seg = bar.createDiv({ cls: "moment-stats-seg" });
+				const on = this.moodFilter.has(name);
+				const seg = bar.createDiv({
+					cls: "moment-stats-seg" + (on ? " on" : ""),
+				});
+				seg.dataset.mood = name;
 				seg.style.width = `${pct}%`;
 				seg.style.background = MOOD_PALETTE[idx % MOOD_PALETTE.length];
 				seg.title = `${name} / ${pct.toFixed(1)}% / ${n}次`;
@@ -465,6 +549,11 @@ export class MomentView extends ItemView {
 				seg.addEventListener("mouseleave", () =>
 					pop.classList.remove("show")
 				);
+				// 单击切换该心情的筛选；可多选，再次点击取消
+				seg.addEventListener("click", (e) => {
+					e.stopPropagation();
+					this.toggleMoodFilter(name);
+				});
 			});
 		} else {
 			this.statsEl.createDiv({
@@ -472,6 +561,75 @@ export class MomentView extends ItemView {
 				text: "暂无带心情的动态",
 			});
 		}
+		this.renderMoodFilterRow();
+	}
+
+	/** 统计条下方的筛选状态行（有筛选时才出现），提供一键清除 */
+	private renderMoodFilterRow() {
+		this.statsEl.querySelector(".moment-stats-filter")?.remove();
+		if (!this.moodFilter.size) return;
+		const row = this.statsEl.createDiv({ cls: "moment-stats-filter" });
+		row.createSpan({
+			cls: "txt",
+			text: `筛选中：${[...this.moodFilter].join(" · ")}`,
+		});
+		const clear = row.createEl("button", {
+			cls: "moment-stats-clear",
+			text: "清除",
+		});
+		clear.addEventListener("click", (e) => {
+			e.stopPropagation();
+			this.clearMoodFilter();
+		});
+	}
+
+	/** 只更新统计条的选中 / 变暗态，避免整块重建导致悬停丢失 */
+	private syncMoodFilterUI() {
+		const bar = this.statsEl.querySelector<HTMLElement>(
+			".moment-stats-segbar"
+		);
+		bar?.classList.toggle("filtering", this.moodFilter.size > 0);
+		this.statsEl
+			.querySelectorAll<HTMLElement>(".moment-stats-seg")
+			.forEach((seg) => {
+				seg.classList.toggle(
+					"on",
+					this.moodFilter.has(seg.dataset.mood || "")
+				);
+			});
+		this.renderMoodFilterRow();
+		// DOM 已就地更新完毕，同步签名，使紧随其后的刷新不再整块重建
+		this.moodStatsSig = this.moodStatsFullSig();
+	}
+
+	/** 切换某心情的筛选状态（多选）；集合清空后统计条与信息流恢复原样 */
+	private toggleMoodFilter(mood: string) {
+		if (this.moodFilter.has(mood)) this.moodFilter.delete(mood);
+		else this.moodFilter.add(mood);
+		this.syncMoodFilterUI();
+		this.applyMoodFilterToFeed();
+	}
+
+	private clearMoodFilter() {
+		if (!this.moodFilter.size) return;
+		this.moodFilter.clear();
+		this.syncMoodFilterUI();
+		this.applyMoodFilterToFeed();
+	}
+
+	/** 按当前心情筛选过滤一天的动态；未开启筛选时原样返回 */
+	private filterMsgs(msgs: MomentMessage[]): MomentMessage[] {
+		if (!this.moodFilter.size) return msgs;
+		return msgs.filter((m) => !!m.mood && this.moodFilter.has(m.mood));
+	}
+
+	/** 筛选变化后重建信息流：重置分页游标，从最新开始按天分组呈现 */
+	private applyMoodFilterToFeed() {
+		this.feedGen++; // 中断在途的旧批次
+		this.feedRendered = 0;
+		this.feedGroups = [];
+		this.feedHasGroup = false;
+		void this.renderFeed();
 	}
 
 	/** 单项数字统计 */
@@ -489,9 +647,13 @@ export class MomentView extends ItemView {
 			: s.coverMode === "url" && !!s.bgUrl;
 	}
 	/** 读取背景原图的自然尺寸，用于悬停时按比例撑满 */
+	private coverSizeSrc = "";
 	private loadCoverSize(): void {
-		this.coverSize = null;
-		if (!this.hasBackgroundImage()) return;
+		if (!this.hasBackgroundImage()) {
+			this.coverSize = null;
+			this.coverSizeSrc = "";
+			return;
+		}
 		const s = this.plugin.settings;
 		const src =
 			(s.coverMode || "file") === "file"
@@ -501,7 +663,15 @@ export class MomentView extends ItemView {
 						) as TFile
 				  )
 				: (s.bgUrl as string);
-		if (!src) return;
+		if (!src) {
+			this.coverSize = null;
+			this.coverSizeSrc = "";
+			return;
+		}
+		// 同一张图只解码一次：刷新非常频繁，重复 new Image 会反复解码整张大图
+		if (src === this.coverSizeSrc) return;
+		this.coverSizeSrc = src;
+		this.coverSize = null;
 		const img = new Image();
 		img.onload = () => {
 			if (img.naturalWidth && img.naturalHeight)
@@ -541,11 +711,11 @@ export class MomentView extends ItemView {
 
 		if (mode === "color") {
 			this.coverImgEl.style.display = "none";
-			this.coverEl.style.background = s.bgColor || "#c9d7ea";
+			this.coverEl.style.backgroundColor = s.bgColor || COVER_TINT;
 		} else if (mode === "gradient") {
 			this.coverImgEl.style.display = "none";
 			this.coverEl.style.backgroundImage =
-				`linear-gradient(120deg, ${s.gradientA || "#9fc7e8"}, ${s.gradientB || "#c9bde8"})`;
+				`linear-gradient(120deg, ${s.gradientA || COVER_TINT_LIGHT}, ${s.gradientB || COVER_TINT_DARK})`;
 		} else if (mode === "url") {
 			this.coverImgEl.style.display = "none";
 			if (s.bgUrl) {
@@ -604,26 +774,28 @@ export class MomentView extends ItemView {
 		// 需显示的天数：完整周 × 7 + 本周已过的天（本周一 ← 今天）
 		const spanDays = (weeks - 1) * ACTIVITY_COLS + todayWd + 1;
 
-		const grid = new ActivityGrid(spanDays, ACTIVITY_COLS);
-		const cells = await grid.compute(this.app, this.plugin.settings, fresh);
+		const grid = new ActivityGrid(spanDays);
+		const cells = await grid.compute(this.store, fresh);
+
+		// 列数与逐日条数都没变时直接复用已渲染的格子。
+		// 刷新多由库内其它文件改动触发，此时活跃度数据通常原封不动，
+		// 重建上百个格子纯属抖动，这里提前返回。
+		this.lastWeeks = weeks;
+		const sig = `${weeks}|${cells
+			.map((c) => `${c.date}:${c.count}`)
+			.join(",")}`;
+		if (sig === this.activitySig) {
+			this.renderWeekColumn(); // 开头测宽时清空过星期栏，需补回
+			this.refreshOnResize();
+			return;
+		}
+		this.activitySig = sig;
+
 		const total = cells.reduce((n, c) => n + c.count, 0);
 		this.gridHeadEl.innerHTML =
 			`<span>活跃度</span><b>近${spanDays}天 · ${total} 条</b>`;
 
-		// 右侧星期栏（固定顺序：一/周一在顶，日/周日在底）
-		this.weekEl.empty();
-		this.weekEl.style.display = "grid";
-		this.weekEl.style.gridTemplateRows = `repeat(${ACTIVITY_COLS}, ${CELL_H}px)`;
-		this.weekEl.style.gridAutoFlow = "column";
-		this.weekEl.style.gap = `${CELL_GAP}px`;
-		for (const wd of WEEKDAY_LABELS) {
-			const item = this.weekEl.createDiv({
-				cls: "moment-activity-week-item",
-				text: wd,
-			});
-			item.style.height = `${CELL_H}px`;
-		}
-		this.weekEl.setAttribute("aria-hidden", "true");
+		this.renderWeekColumn();
 
 		this.gridEl.empty();
 		const levelByDate = new Map<string, number>();
@@ -672,9 +844,28 @@ export class MomentView extends ItemView {
 			cell.style.gridColumn = `${col + 1}`;
 			cell.style.height = `${CELL_H}px`;
 		}
-		this.lastWeeks = weeks;
 		this.refreshOnResize();
 	}
+
+	/** 右侧星期栏（固定顺序：一在顶、日在底，各列一致） */
+	private renderWeekColumn() {
+		this.weekEl.empty();
+		this.weekEl.style.display = "grid";
+		this.weekEl.style.gridTemplateRows = `repeat(${ACTIVITY_COLS}, ${CELL_H}px)`;
+		this.weekEl.style.gridAutoFlow = "column";
+		this.weekEl.style.gap = `${CELL_GAP}px`;
+		for (const wd of WEEKDAY_LABELS) {
+			const item = this.weekEl.createDiv({
+				cls: "moment-activity-week-item",
+				text: wd,
+			});
+			item.style.height = `${CELL_H}px`;
+		}
+		this.weekEl.setAttribute("aria-hidden", "true");
+	}
+
+	/** 活跃度已渲染内容的签名，用于跳过重复重建 */
+	private activitySig = "";
 
 	// 面板宽度变化时重新自适应渲染（纯展示，虚拟列表不重建）
 	private refreshTimer: number | null = null;
@@ -706,9 +897,10 @@ export class MomentView extends ItemView {
 			return;
 		}
 		this.quoteEl.style.display = "";
-		this.quoteEl.textContent = "“" +
-			pool[Math.floor(Math.random() * pool.length)] +
-			"”";
+		// 按「当天」散列取词：同一天内刷新（库事件 / 心跳）不再让名言乱跳，
+		// 但仍然逐日轮换。
+		const seed = hashStr(dateParts(new Date()).dateKey + pool.length);
+		this.quoteEl.textContent = "“" + pool[seed % pool.length] + "”";
 	}
 
 	/**
@@ -722,26 +914,39 @@ export class MomentView extends ItemView {
 	 */
 	private async renderFeed(fresh = false) {
 		const gen = ++this.feedGen;
-		const keep = Math.max(FEED_BATCH, this.feedRendered); // 保留已加载深度
 		this.feedDates = this.store.listDayDates();
 		// 重绘期间占住加载位：期间滚动事件不会再插入并发批次
 		this.feedLoading = true;
-		this.feedHeadEl.empty();
+		this.renderFeedFilterBar();
 		this.setFeedMore("");
 
-		// 先把前 keep 天读成「渲染计划」（只读数据，不改动 DOM）
+		// 分页窗口：未筛选时按已加载深度保留；筛选时改为按「命中的天数」翻页，
+		// 需要时一直向后找够 FEED_BATCH 个命中日（或扫到历史末尾），
+		// 避免稀有心情在第一页查无结果而被误报成「没有符合的动态」。
+		const filtering = this.moodFilter.size > 0;
+		const wantGroups = filtering ? FEED_BATCH : Number.POSITIVE_INFINITY;
+		const slotLimit = Math.min(
+			filtering
+				? Number.POSITIVE_INFINITY
+				: Math.max(FEED_BATCH, this.feedRendered),
+			this.feedDates.length
+		);
+
+		// 先把窗口内的天读成「渲染计划」（只读数据，不改动 DOM）
 		const plan: { date: Date; msgs: MomentMessage[] }[] = [];
 		let cursor = 0;
 		while (
 			gen === this.feedGen &&
-			cursor < keep &&
-			cursor < this.feedDates.length
+			cursor < slotLimit &&
+			plan.length < wantGroups
 		) {
 			const d = this.feedDates[cursor++];
 			const day = await this.store.readDay(d, fresh);
 			if (gen !== this.feedGen) return;
 			if (!day || !day.messages.length) continue;
-			plan.push({ date: d, msgs: [...day.messages].reverse() }); // 该天内最新在上
+			const msgs = this.filterMsgs([...day.messages].reverse()); // 该天内最新在上
+			if (!msgs.length) continue;
+			plan.push({ date: d, msgs });
 		}
 		if (gen !== this.feedGen) return;
 
@@ -780,7 +985,9 @@ export class MomentView extends ItemView {
 		}
 		if (!this.feedHasGroup) {
 			this.feedHost.createDiv({ cls: "moment-empty" }).textContent =
-				"还没有动态。点右上角 ＋，把此刻随手记下来。";
+				this.moodFilter.size
+					? "没有符合所选心情的动态。"
+					: "还没有动态。点右上角 ＋，把此刻随手记下来。";
 		}
 
 		await this.fillViewport(fresh);
@@ -818,23 +1025,66 @@ export class MomentView extends ItemView {
 		this.scheduleFeedWindow();
 	}
 
-	/** 消费队列中接下来的一批日期（最多 FEED_BATCH 个），返回本批新增分组数 */
+	/** 消费队列中接下来的一批日期，返回本批新增分组数。
+	 *  未筛选：最多消费 FEED_BATCH 天；筛选：一直向后找，直到凑够 FEED_BATCH
+	 *  个命中分组或到达队尾（未命中的天不产生分组，但要消耗游标）。 */
 	private async loadFeedBatch(fresh: boolean, gen: number): Promise<number> {
+		const filtering = this.moodFilter.size > 0;
 		const from = this.feedRendered;
-		const to = Math.min(from + FEED_BATCH, this.feedDates.length);
+		const slotLimit = Math.min(
+			filtering ? Number.POSITIVE_INFINITY : from + FEED_BATCH,
+			this.feedDates.length
+		);
+		let cursor = from;
 		let added = 0;
-		for (let i = from; i < to; i++) {
-			if (gen !== this.feedGen) return added;
-			const d = this.feedDates[i];
+		while (
+			gen === this.feedGen &&
+			cursor < slotLimit &&
+			(!filtering || added < FEED_BATCH)
+		) {
+			const d = this.feedDates[cursor++];
 			const day = await this.store.readDay(d, fresh);
 			if (gen !== this.feedGen) return added;
 			if (!day || !day.messages.length) continue;
-			this.appendFeedGroup(d, [...day.messages].reverse()); // 该天内最新在上
+			const msgs = this.filterMsgs([...day.messages].reverse()); // 该天内最新在上
+			if (!msgs.length) continue;
+			this.appendFeedGroup(d, msgs);
 			added++;
 			this.feedHasGroup = true;
 		}
-		this.feedRendered = to;
+		if (gen !== this.feedGen) return added;
+		this.feedRendered = cursor;
 		return added;
+	}
+
+	/** 信息流顶部：筛选进行中的提示条（点色块可逐个取消，也可一键清除） */
+	private renderFeedFilterBar() {
+		const sig = [...this.moodFilter].join("|");
+		if (sig === this.feedFilterSig) return; // 未变化则保留现有按钮，避免打断点击
+		this.feedFilterSig = sig;
+		this.feedHeadEl.empty();
+		if (!this.moodFilter.size) return;
+		const bar = this.feedHeadEl.createDiv({ cls: "moment-filter-bar" });
+		bar.createSpan({ cls: "moment-filter-label", text: "筛选心情" });
+		for (const m of this.moodFilter) {
+			const chip = bar.createEl("button", {
+				cls: "moment-filter-chip",
+				text: m,
+				attr: { title: "点击移除该筛选" },
+			});
+			chip.addEventListener("click", (e) => {
+				e.stopPropagation();
+				this.toggleMoodFilter(m);
+			});
+		}
+		const clear = bar.createEl("button", {
+			cls: "moment-filter-clear",
+			text: "清除全部",
+		});
+		clear.addEventListener("click", (e) => {
+			e.stopPropagation();
+			this.clearMoodFilter();
+		});
 	}
 
 	/**
@@ -1005,6 +1255,8 @@ export class MomentView extends ItemView {
 		const close = () => {
 			document.removeEventListener("keydown", onKey, true);
 			overlay.remove();
+			if (this.lightboxClose === close) this.lightboxClose = null;
+			if (this.lightboxEl === overlay) this.lightboxEl = null;
 		};
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key === "Escape") close();
@@ -1033,6 +1285,10 @@ export class MomentView extends ItemView {
 			});
 		}
 		document.addEventListener("keydown", onKey, true);
+		// 同一时刻只保留一个灯箱；记录引用以便视图关闭时一并清理
+		this.lightboxClose?.();
+		this.lightboxEl = overlay;
+		this.lightboxClose = close;
 		document.body.appendChild(overlay);
 		show();
 	}
@@ -1076,11 +1332,14 @@ export class MomentView extends ItemView {
 	}
 
 	private async renderOverview() {
+		const gen = ++this.overviewGen;
 		for (const [lvl, el] of this.segEls)
 			el.classList.toggle("active", lvl === this.aggr);
 		this.ovLabelEl.textContent = "再次下拉 / 滚动到顶向下可退出全览";
 		this.ovScrollEl.empty();
 		const units = await this.overview.build(this.aggr, 8);
+		// 快速连点档位时，先发出的构建可能后返回：丢弃过期结果
+		if (gen !== this.overviewGen) return;
 		if (!units.length) {
 			this.ovScrollEl.createDiv({ cls: "moment-empty" }).textContent =
 				"这个时间跨度里还没有内容。";
@@ -1094,9 +1353,10 @@ export class MomentView extends ItemView {
 		row.addClass("moment-ov-day");
 		const dl = row.createDiv({ cls: "moment-ov-dl" });
 		if (u.day) {
-			const p = dateParts(new Date(u.day.date));
-			dl.createDiv({ cls: "d", text: String(p.day) });
-			dl.createDiv({ cls: "m", text: `${p.month}月` });
+			// dateKey 形如 "2026-9-10"，直接拆数字，避免 Date 解析非补零串的实现差异
+			const [, mo, dd] = u.day.date.split("-").map(Number);
+			dl.createDiv({ cls: "d", text: String(dd) });
+			dl.createDiv({ cls: "m", text: `${mo}月` });
 		} else {
 			dl.createDiv({ cls: "m", text: u._label });
 		}
@@ -1438,7 +1698,7 @@ const DEFAULT_SIGN = "把日子过成想要的样子";
 /** 快速新建心情的弹窗 */
 class NewMoodModal extends Modal {
 	constructor(
-		private plugin: MomentPlugin,
+		plugin: MomentPlugin,
 		private done: (name: string) => void,
 		private canceled: () => void
 	) {

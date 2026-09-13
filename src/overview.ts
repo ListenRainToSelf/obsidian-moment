@@ -1,19 +1,13 @@
-import { App, TFile, normalizePath } from "obsidian";
-import type { MomentSettings } from "./settings";
-import type { AggregationLevel, MomentDay } from "./types";
 import { DayFileStore } from "./dayFile";
-import { monthBodyDir, attachmentRoot } from "./paths";
+import type { AggregationLevel, MomentDay } from "./types";
 import { dateParts } from "./settings";
 
 /**
  * 下拉全览：把多日的动态聚合成按 天 / 周 / 月 / 年 的相册式分组。
+ * 复用视图的 DayFileStore，使全览与信息流 / 活跃度共享读盘与解析缓存。
  */
 export class OverviewBuilder {
-	private store: DayFileStore;
-
-	constructor(private app: App, private settings: MomentSettings) {
-		this.store = new DayFileStore(app, settings);
-	}
+	constructor(private store: DayFileStore) {}
 
 	/**
 	 * 生成聚合分组。
@@ -24,58 +18,42 @@ export class OverviewBuilder {
 		level: AggregationLevel,
 		lastN: number = 8
 	): Promise<OverviewUnit[]> {
-		// 枚举需要读取的日期
 		const dateDays = this.datesFor(level, lastN);
-		const units: OverviewUnit[] = [];
+		// 并行读取 + 过滤空天，保留原日期顺序
+		const loaded = await Promise.all(
+			dateDays.map((d) => this.store.readDay(d))
+		);
+		const pairs: { date: Date; day: MomentDay }[] = [];
+		loaded.forEach((day, i) => {
+			if (!day || (!day.messages.length && !day.thumbs.length)) return;
+			pairs.push({ date: dateDays[i], day });
+		});
 
 		if (level === "day") {
-			for (const d of dateDays) {
-				const day = await this.store.readDay(d);
-				if (!day || (!day.messages.length && !day.thumbs.length))
-					continue;
-				units.push({
-					key: day.date,
-					_label: labelFor(level, d),
-					day,
-				});
-			}
-		} else {
-			// 周/月/年：聚合 days
-			const grouped = new Map<string, MomentDay[]>();
-			for (const d of dateDays) {
-				const day = await this.store.readDay(d);
-				if (!day || (!day.messages.length && !day.thumbs.length))
-					continue;
-				const key = groupKey(level, d);
-				const arr = grouped.get(key) || [];
-				arr.push(day);
-				grouped.set(key, arr);
-			}
-			// 展平成 units（按 key 排序）
-			const sortedKeys = [...grouped.keys()].sort();
-			for (const key of sortedKeys) {
-				const days = grouped.get(key)!;
-				units.push({
-					key,
-					_label: key,
-					days,
-					thumbCount: days.reduce(
-						(n, d) => n + d.thumbs.length,
-						0
-					),
-				});
-			}
+			return pairs.map(({ date, day }) => ({
+				key: day.date,
+				_label: labelFor(date),
+				day,
+			}));
 		}
-		return units;
-	}
 
-	/** 附件资源路径解析（供缩略图） */
-	thumbUri(fileRef: string): string {
-		return this.app.vault.getResourcePath(
-			this.app.vault.getAbstractFileByPath(
-				normalizePath(fileRef)
-			) as TFile
-		);
+		// 周 / 月 / 年：先按 key 聚合，再按 key 排序展平
+		const grouped = new Map<string, MomentDay[]>();
+		for (const { date, day } of pairs) {
+			const key = groupKey(level, date);
+			const arr = grouped.get(key) || [];
+			arr.push(day);
+			grouped.set(key, arr);
+		}
+		return [...grouped.keys()].sort().map((key) => {
+			const days = grouped.get(key)!;
+			return {
+				key,
+				_label: key,
+				days,
+				thumbCount: days.reduce((n, d) => n + d.thumbs.length, 0),
+			};
+		});
 	}
 
 	/** 生成待扫描日期 */
@@ -109,11 +87,6 @@ export class OverviewBuilder {
 		}
 		return dates;
 	}
-
-	/** 附件根（供外部位图） */
-	get attachmentRoot() {
-		return attachmentRoot(this.settings);
-	}
 }
 
 export interface OverviewUnit {
@@ -132,7 +105,6 @@ function groupKey(level: Exclude<AggregationLevel, "day">, d: Date): string {
 			const weekday = d.getDay() || 7;
 			const monday = new Date(d);
 			monday.setDate(d.getDate() - (weekday - 1));
-			const mp = dateParts(monday);
 			return `${d.getFullYear()}-W` + pad(mondayWeek(monday));
 		}
 		case "month":
@@ -153,7 +125,7 @@ function pad(n: number): string {
 	return String(n).padStart(2, "0");
 }
 
-function labelFor(_l: AggregationLevel, d: Date): string {
+function labelFor(d: Date): string {
 	const p = dateParts(d);
 	return `${p.day} · ${p.month}月`;
 }

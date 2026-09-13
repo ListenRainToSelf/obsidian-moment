@@ -16,6 +16,8 @@ obsidian-moment/
 ├── package.json           # 依赖与构建脚本
 ├── tsconfig.json          # TypeScript 配置
 ├── esbuild.config.mjs     # esbuild 打包配置
+├── scripts/
+│   └── deploy.mjs         # 构建产物同步进 Obsidian 测试库（npm run deploy）
 ├── src/
 │   ├── main.ts            # Plugin 入口，注册视图与命令，轮询心跳
 │   ├── settings.ts        # 设置面板：可配置根目录/命名规则/签名/名言
@@ -129,6 +131,16 @@ npm run build      # 构建，产物为 main.js
 ```
 
 ## 更新日志
+
+### v0.2.9
+- 新增：**心情筛选**。悬停封面出现的心情统计气泡中，每个心情可点选 / 多选，筛选同时作用于统计条与下方信息流（再次点击取消，右上角「清除」一键复位），快速回看「某几种心情」的日子
+- 新增：**默认配色跟随主题**。背景色 / 渐变两色默认值由固定品牌色改为「跟随 Obsidian 主题」（`""`），设置面板的取色器旁新增「恢复跟随主题」按钮（`rotate-ccw` 图标），可随时在自定义与跟随之间切换
+- 优化：**数据层统一走 `DayFileStore` 缓存**。按文件 `mtime` 缓存已解析的日数据、并发读取去重（in-flight 合并）、日文件列表带 `DAY_LIST_TTL = 1500ms` 扫描缓存，活跃度格点 / 全览 / 信息流共享同一份缓存，轮询与滚动刷新不再重复读盘与解析
+- 优化：活跃度格点与全览改为**并行读取**（`Promise.all`），并新增内容签名（`activitySig`）跳过无变化时的重复重建；全览异步构建带代号（`overviewGen`），过期结果直接丢弃
+- 优化：封面背景图不再重复解码（`coverSizeSrc` 记住已应用的尺寸段），每日一言按日期做种（`hashStr(dateKey + 池长度)`）选定，刷新页面不再跳变
+- 修复：灯箱（背景原图）在视图卸载时未清理，残留 DOM；现统一记录句柄并在 `onunload` 释放，且同一时刻只允许一个灯箱
+- 修复：主工作区重复打开「此刻」会产生多个标签页；现若已存在该视图的叶子则直接激活（`revealLeaf`），命令 / 侧边栏图标点击不再叠加新页
+- 新增：构建部署工具 `scripts/deploy.mjs` 与 esbuild `syncToVault` 插件，`npm run dev/build` 产物自动同步进测试库插件目录（`MOMENT_PLUGIN_DIR` 可覆盖，绝不触碰 `data.json`）
 
 ### v0.2.8
 - 新增：信息流**自动卸载（DOM 窗口化）**。每个「天」为一个分组容器（`.moment-feed-group`），只有落在视口上下窗口（上方保留 `FEED_RETAIN_ABOVE = 1400px`、下方保留 `FEED_RETAIN_BELOW = 2000px`）内的分组才真正渲染；窗口外的分组会清空内容并以 `height` 占位（`.moment-feed-group--void`），滚动回看时按高度缓存瞬时挂载 —— 长列表不再无限堆积 DOM，避免资源不足

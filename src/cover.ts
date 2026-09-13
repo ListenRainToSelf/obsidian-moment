@@ -1,6 +1,6 @@
-import { App, TFile, normalizePath } from "obsidian";
+import { App, TFile } from "obsidian";
 import type { MomentSettings } from "./settings";
-import { coverPath, attachmentRoot } from "./paths";
+import { coverPath } from "./paths";
 
 /**
  * 背景自动加载：附件目录内的 img.jpg 即封面。
@@ -27,22 +27,8 @@ export class CoverLoader {
 		return !!this.ref;
 	}
 
-	/** 图片资源地址：优先 vault 资源，外部目录走 file:// */
-	resolveUri(filePath: string): string {
-		const name = normalizePath(filePath).split("/").pop() || filePath;
-		// 若是附件目录内文件，用 vault 资源引用以获得缓存
-		return this.app.vault.getResourcePath(
-			this.app.vault.getAbstractFileByPath(filePath) as TFile
-		) || name;
-	}
-
 	/** 背景清空（文件被删除时调用） */
 	invalidate() {
 		this._ref = undefined;
-	}
-
-	/** 附件目录路径（供外部位图拷贝用） */
-	get root(): string {
-		return attachmentRoot(this.settings);
 	}
 }

@@ -2,7 +2,6 @@ import { Plugin, WorkspaceLeaf } from "obsidian";
 import { MOMENT_VIEW_TYPE } from "./constants";
 import MomentSettingTab, { MomentSettings, DEFAULT_SETTINGS } from "./settings";
 import { MomentView } from "./view";
-import { coverPath } from "./paths";
 
 const HEARTBEAT_MS = 30_000;
 
@@ -43,13 +42,19 @@ export default class MomentPlugin extends Plugin {
 
 		// vault 事件：即时刷新
 		this.registerEvent(
-			this.app.vault.on("create", () => this.scheduleRefresh())
+			this.app.vault.on("create", () => {
+				this.invalidateDayList();
+				this.scheduleRefresh();
+			})
 		);
 		this.registerEvent(
 			this.app.vault.on("modify", () => this.scheduleRefresh())
 		);
 		this.registerEvent(
-			this.app.vault.on("delete", () => this.scheduleRefresh())
+			this.app.vault.on("delete", () => {
+				this.invalidateDayList();
+				this.scheduleRefresh();
+			})
 		);
 
 		// 轮询心跳兜底外部改动
@@ -80,6 +85,16 @@ export default class MomentPlugin extends Plugin {
 			.forEach((l) => {
 				if (this.isSidebarLeaf(l)) l.detach();
 			});
+
+		// 主区域已有实例：直接聚焦，不再新开标签页
+		const existing = this.app.workspace
+			.getLeavesOfType(MOMENT_VIEW_TYPE)
+			.find((l) => !this.isSidebarLeaf(l));
+		if (existing) {
+			await this.app.workspace.revealLeaf(existing);
+			this.refreshViews();
+			return;
+		}
 
 		// 先让活动焦点落在主工作区，再在中间取一个标签页
 		let mainLeaf: WorkspaceLeaf | null = null;
@@ -159,6 +174,13 @@ export default class MomentPlugin extends Plugin {
 	private heartbeat() {
 		// 轮询兜底：库外改动可能不在 Obsidian 索引/缓存中，强制读磁盘刷新
 		this.refreshViews(true);
+	}
+
+	/** 库内新增 / 删除文件：让各视图的日文件列表缓存立即失效 */
+	private invalidateDayList() {
+		for (const l of this.app.workspace.getLeavesOfType(MOMENT_VIEW_TYPE)) {
+			if (l.view instanceof MomentView) l.view.invalidateDayList();
+		}
 	}
 
 	private refreshViews(fresh = false) {

@@ -25,9 +25,9 @@ export interface MomentSettings {
 	coverName: string;
 	/** 背景类型：本地图片 / 纯色 / 渐变 / 网络URL */
 	coverMode: "file" | "color" | "gradient" | "url";
-	/** 纯色背景色（coverMode=color 时生效） */
+	/** 纯色背景色（coverMode=color 时生效；留空则跟随主题色） */
 	bgColor: string;
-	/** 渐变起止色（coverMode=gradient 时生效） */
+	/** 渐变起止色（coverMode=gradient 时生效；留空则跟随主题色） */
 	gradientA: string;
 	gradientB: string;
 	/** 网络背景 URL（coverMode=url 时生效） */
@@ -49,9 +49,10 @@ export const DEFAULT_SETTINGS: MomentSettings = {
 	imageMode: "grid",
 	coverName: "img.jpg",
 	coverMode: "file",
-	bgColor: "#c9d7ea",
-	gradientA: "#9fc7e8",
-	gradientB: "#c9bde8",
+	// 留空 = 跟随 Obsidian 主题色（不再内置蓝紫品牌色）
+	bgColor: "",
+	gradientA: "",
+	gradientB: "",
 	bgUrl: "",
 	textColor: "",
 	coverAlign: 3,
@@ -198,39 +199,72 @@ export default class MomentSettingTab extends PluginSettingTab {
 			// 纯色
 			new Setting(containerEl)
 				.setName("纯色背景")
-				.setDesc("背景类型为“纯色”时生效。")
+				.setDesc("背景类型为“纯色”时生效。留空 = 跟随 Obsidian 主题色（点 ↺ 恢复跟随）。")
 				.addColorPicker((cp) => {
-					cp.setValue(this.plugin.settings.bgColor || "#c9d7ea");
+					cp.setValue(this.plugin.settings.bgColor || "#8fa2bd");
 					cp.onChange(async (v) => {
 						this.plugin.settings.bgColor = v;
 						await this.plugin.saveSettings();
 						this.plugin.reloadCover();
 					});
-				});
+				})
+				.addExtraButton((btn) =>
+					btn
+						.setIcon("rotate-ccw")
+						.setTooltip("跟随主题色")
+						.onClick(async () => {
+							this.plugin.settings.bgColor = "";
+							await this.plugin.saveSettings();
+							this.plugin.reloadCover();
+							this.display();
+						})
+				);
 
 			// 渐变
 			new Setting(containerEl)
 				.setName("渐变起色")
-				.setDesc("背景类型为“渐变”时生效。")
+				.setDesc("背景类型为“渐变”时生效。留空 = 跟随 Obsidian 主题色（点 ↺ 恢复跟随）。")
 				.addColorPicker((cp) => {
-					cp.setValue(this.plugin.settings.gradientA || "#9fc7e8");
+					cp.setValue(this.plugin.settings.gradientA || "#8fa2bd");
 					cp.onChange(async (v) => {
 						this.plugin.settings.gradientA = v;
 						await this.plugin.saveSettings();
 						this.plugin.reloadCover();
 					});
-				});
+				})
+				.addExtraButton((btn) =>
+					btn
+						.setIcon("rotate-ccw")
+						.setTooltip("跟随主题色")
+						.onClick(async () => {
+							this.plugin.settings.gradientA = "";
+							await this.plugin.saveSettings();
+							this.plugin.reloadCover();
+							this.display();
+						})
+				);
 			new Setting(containerEl)
 				.setName("渐变止色")
-				.setDesc("背景类型为“渐变”时生效。")
+				.setDesc("背景类型为“渐变”时生效。留空 = 跟随 Obsidian 主题色（点 ↺ 恢复跟随）。")
 				.addColorPicker((cp) => {
-					cp.setValue(this.plugin.settings.gradientB || "#c9bde8");
+					cp.setValue(this.plugin.settings.gradientB || "#8fa2bd");
 					cp.onChange(async (v) => {
 						this.plugin.settings.gradientB = v;
 						await this.plugin.saveSettings();
 						this.plugin.reloadCover();
 					});
-				});
+				})
+				.addExtraButton((btn) =>
+					btn
+						.setIcon("rotate-ccw")
+						.setTooltip("跟随主题色")
+						.onClick(async () => {
+							this.plugin.settings.gradientB = "";
+							await this.plugin.saveSettings();
+							this.plugin.reloadCover();
+							this.display();
+						})
+				);
 
 			// 网络图片 URL
 			new Setting(containerEl)
@@ -398,7 +432,13 @@ export default class MomentSettingTab extends PluginSettingTab {
 					.setButtonText("恢复默认设置")
 					.setWarning()
 					.onClick(async () => {
-						this.plugin.settings = { ...DEFAULT_SETTINGS };
+						// 深拷贝数组字段，否则会与 DEFAULT_SETTINGS 共享引用，
+						// 之后「添加名言 / 心情」会污染默认值
+						this.plugin.settings = {
+							...DEFAULT_SETTINGS,
+							quotes: [...DEFAULT_SETTINGS.quotes],
+							moods: [...DEFAULT_SETTINGS.moods],
+						};
 						await this.plugin.saveSettings();
 						this.display();
 						new Notice("已恢复默认设置");

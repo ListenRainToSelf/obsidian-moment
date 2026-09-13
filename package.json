@@ -1,11 +1,12 @@
 {
 	"name": "obsidian-moment",
-	"version": "0.2.8",
+	"version": "0.2.9",
 	"description": "此刻 MOMENT · 朋友圈式日记插件",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
-		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
+		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"deploy": "node scripts/deploy.mjs"
 	},
 	"keywords": [
 		"obsidian",

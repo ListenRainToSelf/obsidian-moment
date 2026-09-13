@@ -29,13 +29,6 @@ export interface MomentDay {
 /** 全览聚合档位 */
 export type AggregationLevel = "day" | "week" | "month" | "year";
 
-/** 封面状态 */
-export interface MomentCover {
-	/** 附件目录内背景的相对路径（若有 img.jpg） */
-	ref?: string;
-	signature: string;
-}
-
 /** 活跃度格点的一条 */
 export interface ActivityCell {
 	date: string;
